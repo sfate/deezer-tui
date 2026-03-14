@@ -1,0 +1,4 @@
+# gitignore
+# ignore the target directory
+target/
+target/debug/

@@ -10,6 +10,38 @@ use crate::{
     config::AudioQuality,
 };
 
+use image::DynamicImage;
+
+/// Render a DynamicImage into `area` using Unicode half-block characters (▄).
+/// Works in every terminal. Each terminal row holds two image pixel-rows via
+/// foreground / background colour, giving a 12×6 cell area a visually square
+/// appearance with standard 8×16 px terminal fonts.
+fn render_cover_art(f: &mut ratatui::Frame<'_>, img: &DynamicImage, area: ratatui::layout::Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let px_w = area.width as u32;
+    let px_h = area.height as u32 * 2; // 2 pixel-rows per character row
+    let resized = img.resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3);
+    let rgb = resized.to_rgb8();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(area.height as usize);
+    for row in 0..area.height {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(area.width as usize);
+        for col in 0..area.width {
+            let top = rgb.get_pixel(col as u32, (row * 2) as u32);
+            let bot = rgb.get_pixel(col as u32, (row * 2 + 1) as u32);
+            spans.push(Span::styled(
+                "▄",
+                Style::default()
+                    .fg(Color::Rgb(bot[0], bot[1], bot[2]))
+                    .bg(Color::Rgb(top[0], top[1], top[2])),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 fn quality_label(quality: AudioQuality) -> &'static str {
     match quality {
         AudioQuality::Kbps128 => "128kbps",
@@ -30,7 +62,11 @@ fn panel_is_active(app: &App, panel: ActivePanel) -> bool {
     app.active_panel == panel
 }
 
-pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
+pub fn render(
+    f: &mut ratatui::Frame<'_>,
+    app: &mut App,
+    use_true_image_protocol: bool,
+) -> Option<ratatui::layout::Rect> {
     let accent = Color::Magenta;
 
     // Root layout: main content + player bar
@@ -163,6 +199,9 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
         .split(main_sections[1]);
 
     // Main view header
+    let is_home_page = app.current_playlist_id.as_deref() == Some("__home__");
+    let is_explore_page = app.current_playlist_id.as_deref() == Some("__explore__");
+
     let header = if app.viewing_settings {
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -234,6 +273,36 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
                 Style::default().fg(Color::DarkGray),
             )),
         ])
+    } else if is_home_page {
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Home - Recommended For You",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Tracks personalized from your Deezer account",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                format!("{} recommended tracks", app.current_tracks.len()),
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+    } else if is_explore_page {
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Explore - Trending And Discovery",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Live recommendations from your Deezer account session",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                format!("{} explore tracks", app.current_tracks.len()),
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
     } else if !app.current_tracks.is_empty() {
         let playlist_id = app.current_playlist_id.as_deref().unwrap_or("Unknown");
         let playlist_name = app
@@ -266,11 +335,11 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
     } else {
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "Flow",
+                "Deezer-TUI",
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Made for you - nonstop music tuned to your taste",
+                "Welcome - use the shortcuts below to get started",
                 Style::default().fg(Color::DarkGray),
             )),
         ])
@@ -278,6 +347,10 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
 
     let main_title = if app.viewing_settings {
         "Settings"
+    } else if is_home_page {
+        "Home"
+    } else if is_explore_page {
+        "Explore"
     } else if app.showing_search_results {
         match app.search_category {
             SearchCategory::Tracks => "Search: Tracks",
@@ -287,7 +360,7 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
     } else if !app.current_tracks.is_empty() {
         "Tracks"
     } else {
-        "Flow / Explore"
+        "Controls"
     };
 
     let header_block = header.block(
@@ -405,25 +478,26 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
 
         f.render_stateful_widget(tracks_list, main_content_sections[1], &mut app.main_state);
     } else {
-        // Default discovery view
-        let recently_played = Paragraph::new(vec![
+        // Startup controls page
+        let controls = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Recently Played",
+                "Arrow Keys - Navigate",
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled("Venom", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("Lose Yourself", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("Mockingbird", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("Godzilla", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("TAB - Switch Focus", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("Enter - Select", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("P - Play/Pause", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("/ - Search", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("Q - Quit", Style::default().fg(Color::DarkGray))),
         ])
         .block(
             Block::default()
-                .title("Discover")
+                .title("How To Use")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .padding(Padding::new(2, 2, 1, 1)),
         );
-        f.render_widget(recently_played, main_content_sections[1]);
+        f.render_widget(controls, main_content_sections[1]);
     }
 
     // Player bar layout
@@ -459,14 +533,48 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(track_artist, Style::default().fg(Color::DarkGray))),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .padding(Padding::new(1, 1, 0, 0)),
-    );
-    f.render_widget(track_info, player_bar[0]);
+    ]);
+    // ── bottom-left panel: cover art thumbnail + track title/artist ──────────
+    // ART_COLS is chosen so that with 8×16 px terminal cells the displayed image
+    // is visually square (12 cols × 8 px = 96 px wide; 6 rows × 16 px = 96 px tall).
+    const ART_COLS: u16 = 12;
+    let show_art = app.cover_art.is_some() && player_bar[0].width > ART_COLS + 8;
+    let mut protocol_art_rect: Option<ratatui::layout::Rect> = None;
+    if show_art {
+        let pb0_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(ART_COLS), Constraint::Min(0)])
+            .split(player_bar[0]);
+        if use_true_image_protocol {
+            f.render_widget(
+                Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
+                pb0_split[0],
+            );
+            protocol_art_rect = Some(
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+                    .split(pb0_split[0])[1],
+            );
+        } else if let Some(img) = &app.cover_art {
+            render_cover_art(f, img, pb0_split[0]);
+        }
+        let info = track_info.clone().block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .padding(Padding::new(1, 1, 0, 0)),
+        );
+        f.render_widget(info, pb0_split[1]);
+    } else {
+        let info = track_info.block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .padding(Padding::new(1, 1, 0, 0)),
+        );
+        f.render_widget(info, player_bar[0]);
+    }
 
     let controls_and_progress = Layout::default()
         .direction(Direction::Vertical)
@@ -586,4 +694,6 @@ pub fn render(f: &mut ratatui::Frame<'_>, app: &mut App) {
                 .padding(Padding::new(1, 1, 1, 0)),
         );
     f.render_widget(volume_settings, player_bar[2]);
+
+    protocol_art_rect
 }

@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE, USER_AGENT};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::{collections::HashSet, env, fs};
 use crate::config::AudioQuality;
 
 const GATEWAY_URL: &str = "https://www.deezer.com/ajax/gw-light.php";
@@ -27,6 +27,7 @@ pub struct TrackMetadata {
     pub artist: String,
     pub track_token: String,
     pub duration_secs: Option<u64>,
+    pub album_art_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +190,11 @@ impl DeezerClient {
             .and_then(|s| s.parse::<u64>().ok())
             .or_else(|| result["DURATION"].as_u64());
 
+        let album_art_url = result["ALB_PICTURE"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|hash| format!("https://e-cdns-images.dzcdn.net/images/cover/{hash}/500x500-000000-80-0-0.jpg"));
+
         Ok(TrackMetadata {
             id: result["SNG_ID"]
                 .as_str()
@@ -198,6 +204,7 @@ impl DeezerClient {
             artist,
             track_token,
             duration_secs,
+            album_art_url,
         })
     }
 
@@ -300,6 +307,10 @@ impl DeezerClient {
                         .as_str()
                         .and_then(|s| s.parse().ok())
                         .or_else(|| track["DURATION"].as_u64()),
+                    album_art_url: track["ALB_PICTURE"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(|hash| format!("https://e-cdns-images.dzcdn.net/images/cover/{hash}/500x500-000000-80-0-0.jpg")),
                 })
             })
             .collect();
@@ -679,4 +690,242 @@ impl DeezerClient {
         Ok((tracks, playlists, artists))
     }
 
+    pub async fn fetch_home_tracks(&self) -> Result<Vec<(String, String, String)>> {
+        let (response, raw) = self
+            .authenticated_gateway_call_with_raw(
+                "deezer.pageHome",
+                Some(json!({
+                    "lang": "en",
+                    "nb": 80,
+                    "start": 0
+                })),
+            )
+            .await?;
+
+        write_gateway_debug_dump("home_raw.json", &raw);
+
+        let mut tracks = extract_tracks_recursive(&response["results"], 120);
+        if tracks.is_empty() {
+            tracks = self.fetch_home_tracks_fallback().await?;
+        }
+        Ok(tracks)
+    }
+
+    pub async fn fetch_explore_tracks(&self) -> Result<Vec<(String, String, String)>> {
+        let mut tracks = match self
+            .authenticated_gateway_call_with_raw(
+                "deezer.pageExplore",
+                Some(json!({
+                    "lang": "en",
+                    "nb": 80,
+                    "start": 0
+                })),
+            )
+            .await
+        {
+            Ok((response, raw)) => {
+                write_gateway_debug_dump("explore_raw.json", &raw);
+                extract_tracks_recursive(&response["results"], 120)
+            }
+            Err(err) => {
+                write_gateway_debug_dump("explore_error.json", &json!({"error": err.to_string()}).to_string());
+                Vec::new()
+            }
+        };
+
+        if tracks.is_empty() {
+            // Fallback for accounts/regions where pageExplore does not expose tracks.
+            if let Ok((response, raw)) = self
+                .authenticated_gateway_call_with_raw(
+                    "deezer.pageHome",
+                    Some(json!({
+                        "lang": "en",
+                        "tab": "explore",
+                        "nb": 80,
+                        "start": 0
+                    })),
+                )
+                .await
+            {
+                write_gateway_debug_dump("home_explore_tab_raw.json", &raw);
+                tracks = extract_tracks_recursive(&response["results"], 120);
+            }
+        }
+
+        if tracks.is_empty() {
+            tracks = self.fetch_explore_tracks_fallback().await?;
+        }
+
+        Ok(tracks)
+    }
+
+    async fn fetch_home_tracks_fallback(&self) -> Result<Vec<(String, String, String)>> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        let mut seen_track_ids: HashSet<String> = HashSet::new();
+
+        if let Ok(favorites) = self.fetch_favorite_tracks().await {
+            append_unique_tracks(&mut out, &mut seen_track_ids, favorites.into_iter(), 120);
+        }
+
+        if let Some(user_id) = self.user_id() {
+            if let Ok(playlists) = self.fetch_user_playlists(user_id).await {
+                for (playlist_id, _) in playlists.into_iter().take(8) {
+                    if out.len() >= 120 {
+                        break;
+                    }
+                    if let Ok(tracks) = self.fetch_playlist_tracks(&playlist_id).await {
+                        append_unique_tracks(
+                            &mut out,
+                            &mut seen_track_ids,
+                            tracks.into_iter().take(20),
+                            120,
+                        );
+                    }
+                }
+            }
+        }
+
+        if out.is_empty() {
+            return Err(anyhow!("home fallback produced no tracks"));
+        }
+        Ok(out)
+    }
+
+    async fn fetch_explore_tracks_fallback(&self) -> Result<Vec<(String, String, String)>> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        let mut seen_track_ids: HashSet<String> = HashSet::new();
+
+        let seed_tracks = self.fetch_home_tracks_fallback().await.unwrap_or_default();
+        let mut seen_artists = HashSet::new();
+        let artist_seeds: Vec<String> = seed_tracks
+            .into_iter()
+            .map(|(_, _, artist)| artist)
+            .filter(|artist| seen_artists.insert(artist.to_lowercase()))
+            .take(12)
+            .collect();
+
+        for artist in artist_seeds {
+            if out.len() >= 120 {
+                break;
+            }
+            if let Ok((tracks, _, _)) = self.fetch_search_results(&artist).await {
+                append_unique_tracks(
+                    &mut out,
+                    &mut seen_track_ids,
+                    tracks.into_iter().take(20),
+                    120,
+                );
+            }
+        }
+
+        if out.is_empty() {
+            out = self.fetch_home_tracks_fallback().await?;
+        }
+
+        Ok(out)
+    }
+
+}
+
+fn write_gateway_debug_dump(file_name: &str, raw: &str) {
+    let enabled = env::var("DEEZER_TUI_DEBUG_DUMPS")
+        .ok()
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+
+    let Some(mut base) = dirs::home_dir() else {
+        return;
+    };
+    base.push(".deezer-tui-debug");
+    if fs::create_dir_all(&base).is_err() {
+        return;
+    }
+
+    let mut path = base;
+    path.push(file_name);
+    let _ = fs::write(path, raw);
+}
+
+fn append_unique_tracks<I>(
+    out: &mut Vec<(String, String, String)>,
+    seen: &mut HashSet<String>,
+    iter: I,
+    limit: usize,
+) where
+    I: Iterator<Item = (String, String, String)>,
+{
+    for (id, title, artist) in iter {
+        if out.len() >= limit {
+            break;
+        }
+        if seen.insert(id.clone()) {
+            out.push((id, title, artist));
+        }
+    }
+}
+
+fn extract_tracks_recursive(value: &Value, limit: usize) -> Vec<(String, String, String)> {
+    fn walk(
+        node: &Value,
+        out: &mut Vec<(String, String, String)>,
+        seen: &mut HashSet<String>,
+        limit: usize,
+    ) {
+        if out.len() >= limit {
+            return;
+        }
+
+        match node {
+            Value::Object(map) => {
+                let id = map
+                    .get("SNG_ID")
+                    .and_then(|v| v.as_str().map(ToOwned::to_owned).or_else(|| v.as_i64().map(|n| n.to_string())))
+                    .or_else(|| map.get("id").and_then(|v| v.as_str().map(ToOwned::to_owned).or_else(|| v.as_i64().map(|n| n.to_string()))));
+
+                let title = map
+                    .get("SNG_TITLE")
+                    .and_then(Value::as_str)
+                    .or_else(|| map.get("title").and_then(Value::as_str));
+
+                let artist = map
+                    .get("ART_NAME")
+                    .and_then(Value::as_str)
+                    .or_else(|| map.get("artist").and_then(|a| a.get("name")).and_then(Value::as_str))
+                    .or_else(|| map.get("ARTISTS").and_then(Value::as_array).and_then(|arr| arr.first()).and_then(|a| a.get("ART_NAME")).and_then(Value::as_str));
+
+                if let (Some(id), Some(title), Some(artist)) = (id, title, artist) {
+                    if seen.insert(id.clone()) {
+                        out.push((id, title.to_owned(), artist.to_owned()));
+                        if out.len() >= limit {
+                            return;
+                        }
+                    }
+                }
+
+                for child in map.values() {
+                    walk(child, out, seen, limit);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, out, seen, limit);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    walk(value, &mut out, &mut seen, limit);
+    out
 }

@@ -2,6 +2,8 @@ mod api;
 mod app;
 mod config;
 mod crypto;
+mod discord_rpc;
+mod mpris;
 mod player;
 mod ui;
 
@@ -9,13 +11,20 @@ use std::{
     fs,
     io,
     io::Write,
+    path::Path,
     path::PathBuf,
+    process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 use anyhow::{anyhow, Context, Result as AnyResult};
+use base64::Engine;
 use app::{ActivePanel, App, Command, NowPlaying, RepeatMode, SearchCategory, UiEvent};
 use config::{AudioQuality, Config, Theme};
+use discord_rpc::{DiscordPresence, DiscordRpcHandle};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEvent,
@@ -30,7 +39,211 @@ use ratatui::{
 };
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use serde_json::json;
+use mpris_server::{LoopStatus, PlaybackStatus, Server};
 use tokio::sync::{mpsc, oneshot};
+
+#[cfg(unix)]
+struct StderrSilenceGuard {
+    original_stderr_fd: i32,
+}
+
+#[cfg(unix)]
+impl StderrSilenceGuard {
+    fn activate() -> AnyResult<Self> {
+        let devnull = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .context("failed to open /dev/null")?;
+
+        let original_stderr_fd = unsafe { libc::dup(libc::STDERR_FILENO) };
+        if original_stderr_fd < 0 {
+            return Err(anyhow!("failed to dup stderr"));
+        }
+
+        let rc = unsafe { libc::dup2(devnull.as_raw_fd(), libc::STDERR_FILENO) };
+        if rc < 0 {
+            unsafe {
+                libc::close(original_stderr_fd);
+            }
+            return Err(anyhow!("failed to redirect stderr to /dev/null"));
+        }
+
+        Ok(Self { original_stderr_fd })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrSilenceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libc::dup2(self.original_stderr_fd, libc::STDERR_FILENO);
+            let _ = libc::close(self.original_stderr_fd);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct StderrSilenceGuard;
+
+#[cfg(not(unix))]
+impl StderrSilenceGuard {
+    fn activate() -> AnyResult<Self> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageProtocol {
+    None,
+    Kitty,
+    Ueberzugpp,
+}
+
+fn detect_image_protocol() -> ImageProtocol {
+    let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+    let kitty_window = std::env::var("KITTY_WINDOW_ID").ok();
+
+    if kitty_window.is_some()
+        || term.contains("xterm-kitty")
+        || term_program.contains("wezterm")
+        || term_program.contains("ghostty")
+    {
+        ImageProtocol::Kitty
+    } else if ProcessCommand::new("ueberzugpp")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+    {
+        ImageProtocol::Ueberzugpp
+    } else {
+        ImageProtocol::None
+    }
+}
+
+struct UeberzugppLayer {
+    child: Child,
+    stdin: ChildStdin,
+    identifier: String,
+}
+
+impl UeberzugppLayer {
+    fn start() -> Option<Self> {
+        let mut child = ProcessCommand::new("ueberzugpp")
+            .arg("layer")
+            .arg("--silent")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdin = child.stdin.take()?;
+        Some(Self {
+            child,
+            stdin,
+            identifier: "deezer-tui-cover".to_string(),
+        })
+    }
+
+    fn add(&mut self, path: &Path, area: ratatui::layout::Rect) -> io::Result<()> {
+        if area.width == 0 || area.height == 0 {
+            return Ok(());
+        }
+        let payload = json!({
+            "action": "add",
+            "identifier": self.identifier,
+            "path": path.display().to_string(),
+            "x": area.x,
+            "y": area.y,
+            "width": area.width,
+            "height": area.height,
+            "scaler": "fit_contain"
+        });
+        writeln!(self.stdin, "{}", payload)?;
+        self.stdin.flush()
+    }
+
+    fn remove(&mut self) -> io::Result<()> {
+        let payload = json!({
+            "action": "remove",
+            "identifier": self.identifier
+        });
+        writeln!(self.stdin, "{}", payload)?;
+        self.stdin.flush()
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.remove();
+        let _ = self.stdin.flush();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn write_cover_png_temp(png: &[u8]) -> io::Result<PathBuf> {
+    let path = std::env::temp_dir().join("deezer-tui-cover.png");
+    fs::write(&path, png)?;
+    Ok(path)
+}
+
+fn kitty_delete_image(image_id: u32) -> io::Result<()> {
+    let mut out = io::stdout();
+    write!(out, "\x1b_Ga=d,d=I,i={}\x1b\\", image_id)?;
+    out.flush()
+}
+
+fn kitty_draw_png_at_rect(png: &[u8], image_id: u32, area: ratatui::layout::Rect) -> io::Result<()> {
+    if area.width == 0 || area.height == 0 {
+        return Ok(());
+    }
+
+    let payload = base64::engine::general_purpose::STANDARD.encode(png);
+    let mut out = io::stdout();
+
+    // Save/restore cursor to avoid disturbing TUI input focus.
+    write!(out, "\x1b[s\x1b[{};{}H", area.y + 1, area.x + 1)?;
+
+    let mut idx = 0usize;
+    let chunk = 4096usize;
+    let mut first = true;
+    while idx < payload.len() {
+        let end = (idx + chunk).min(payload.len());
+        let part = &payload[idx..end];
+        let more = if end < payload.len() { 1 } else { 0 };
+        if first {
+            write!(
+                out,
+                "\x1b_Ga=T,f=100,i={},c={},r={},m={};{}\x1b\\",
+                image_id,
+                area.width,
+                area.height,
+                more,
+                part
+            )?;
+            first = false;
+        } else {
+            write!(out, "\x1b_Gm={};{}\x1b\\", more, part)?;
+        }
+        idx = end;
+    }
+
+    write!(out, "\x1b[u")?;
+    out.flush()
+}
+
+struct MprisHandle {
+    server: Server<mpris::MprisPlayer>,
+    event_rx: crossbeam_channel::Receiver<mpris::MprisEvent>,
+    last_update: Instant,
+}
+
+async fn create_mpris_handle() -> Option<MprisHandle> {
+    let (server, event_rx) = mpris::create_server().await?;
+    Some(MprisHandle { server, event_rx, last_update: Instant::now() })
+}
 
 #[derive(Debug, Clone, Copy)]
 enum PlayerControl {
@@ -52,9 +265,33 @@ fn next_quality(current: AudioQuality, forward: bool) -> AudioQuality {
     }
 }
 
+fn sync_discord_presence(discord_rpc: &DiscordRpcHandle, app: &App) {
+    if !app.discord_rpc_enabled {
+        discord_rpc.clear();
+        return;
+    }
+
+    if let Some(now) = app.now_playing.as_ref() {
+        discord_rpc.update(DiscordPresence {
+            title: now.title.clone(),
+            artist: now.artist.clone(),
+            track_id: now.id.clone(),
+            album_art_url: now.album_art_url.clone(),
+            current_ms: now.current_ms,
+            total_ms: now.total_ms,
+            is_playing: app.is_playing,
+        });
+    } else {
+        discord_rpc.clear();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_verified_arl().await?;
+
+    // Suppress noisy native audio warnings (e.g. ALSA underruns) while TUI is active.
+    let _stderr_silence = StderrSilenceGuard::activate()?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -71,6 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_crossfade_enabled = config.crossfade_enabled;
     let initial_crossfade_duration_ms = config.crossfade_duration_ms;
     let mut app = App::new(config, command_sender);
+    let discord_rpc = DiscordRpcHandle::new();
 
     // Spawn task to fetch user playlists on startup
     let playlists_event_tx = event_tx.clone();
@@ -124,7 +362,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enabled: initial_crossfade_enabled,
         duration_ms: initial_crossfade_duration_ms,
     });
-    let run_result = run_tui_loop(&mut terminal, &mut app, &mut event_rx, &mut audio_task).await;
+    let mut mpris_handle = create_mpris_handle().await;
+    let run_result = run_tui_loop(
+        &mut terminal,
+        &mut app,
+        &mut event_rx,
+        &mut audio_task,
+        &mut mpris_handle,
+        &discord_rpc,
+    ).await;
 
     drop(app);
     let restore_result = restore_terminal(&mut terminal);
@@ -134,6 +380,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+
+    discord_rpc.shutdown();
 
     if let Err(err) = restore_result {
         return Err(err.into());
@@ -157,10 +405,28 @@ async fn run_tui_loop(
     app: &mut App,
     event_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
     audio_task: &mut Option<tokio::task::JoinHandle<()>>,
+    mpris: &mut Option<MprisHandle>,
+    discord_rpc: &DiscordRpcHandle,
 ) -> AnyResult<()> {
     let mut last_tick = Instant::now();
+    let mut last_rpc_refresh = Instant::now();
+    let mut image_protocol = detect_image_protocol();
+    let mut ueberzugpp_layer = match image_protocol {
+        ImageProtocol::Ueberzugpp => UeberzugppLayer::start(),
+        _ => None,
+    };
+    if matches!(image_protocol, ImageProtocol::Ueberzugpp) && ueberzugpp_layer.is_none() {
+        image_protocol = ImageProtocol::None;
+    }
+    let use_true_image_protocol = image_protocol != ImageProtocol::None;
+    let kitty_image_id: u32 = 1337;
+    let mut last_drawn_cover_sig: Option<(String, u16, u16, u16, u16)> = None;
+    let mut force_full_redraw = true;
+    // Channel for background cover-art downloads.
+    let (cover_tx, mut cover_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
 
-    loop {
+    'ui: loop {
         let elapsed = last_tick.elapsed();
         last_tick = Instant::now();
 
@@ -168,6 +434,13 @@ async fn run_tui_loop(
             if let Some(now) = app.now_playing.as_mut() {
                 now.current_ms = (now.current_ms + elapsed.as_millis() as u64).min(now.total_ms);
             }
+        }
+
+        // Heartbeat refresh: re-publish Discord presence periodically in case
+        // Discord clears it unexpectedly during seek/crossfade transitions.
+        if last_rpc_refresh.elapsed() >= Duration::from_secs(5) {
+            sync_discord_presence(discord_rpc, app);
+            last_rpc_refresh = Instant::now();
         }
 
         if app.is_playing
@@ -207,6 +480,147 @@ async fn run_tui_loop(
             }
         }
 
+        // Process MPRIS media control events from the OS/desktop environment
+        if let Some(mpris_handle) = mpris.as_mut() {
+            while let Ok(event) = mpris_handle.event_rx.try_recv() {
+                match event {
+                    mpris::MprisEvent::Play => {
+                        if app.now_playing.is_some() && !app.is_playing {
+                            app.command_sender
+                                .send(Command::Resume)
+                                .map_err(|_| anyhow!("MPRIS: failed to resume"))?;
+                        }
+                    }
+                    mpris::MprisEvent::Pause => {
+                        if app.is_playing {
+                            app.command_sender
+                                .send(Command::Pause)
+                                .map_err(|_| anyhow!("MPRIS: failed to pause"))?;
+                        }
+                    }
+                    mpris::MprisEvent::Toggle => {
+                        if app.is_playing {
+                            app.command_sender
+                                .send(Command::Pause)
+                                .map_err(|_| anyhow!("MPRIS: failed to toggle pause"))?;
+                        } else if app.now_playing.is_some() {
+                            app.command_sender
+                                .send(Command::Resume)
+                                .map_err(|_| anyhow!("MPRIS: failed to toggle resume"))?;
+                        }
+                    }
+                    mpris::MprisEvent::Next => {
+                        if let Some(current_idx) = app.queue_index {
+                            let next_idx = current_idx + 1;
+                            if next_idx < app.queue_tracks.len() {
+                                app.queue_index = Some(next_idx);
+                                app.queue_state.select(Some(next_idx));
+                                if let Some((track_id, _, _)) = app.queue_tracks.get(next_idx) {
+                                    app.command_sender
+                                        .send(Command::PlayTrack(track_id.clone()))
+                                        .map_err(|_| anyhow!("MPRIS: failed to play next"))?;
+                                    app.is_playing = true;
+                                }
+                            }
+                        }
+                    }
+                    mpris::MprisEvent::Previous => {
+                        if let Some(current_idx) = app.queue_index {
+                            if current_idx > 0 {
+                                let prev_idx = current_idx - 1;
+                                app.queue_index = Some(prev_idx);
+                                app.queue_state.select(Some(prev_idx));
+                                if let Some((track_id, _, _)) = app.queue_tracks.get(prev_idx) {
+                                    app.command_sender
+                                        .send(Command::PlayTrack(track_id.clone()))
+                                        .map_err(|_| anyhow!("MPRIS: failed to play previous"))?;
+                                    app.is_playing = true;
+                                }
+                            }
+                        }
+                    }
+                    mpris::MprisEvent::SeekBy(offset_us) => {
+                        if let Some(now) = app.now_playing.as_ref() {
+                            if now.quality != AudioQuality::Flac {
+                                let current_us = now.current_ms as i64 * 1_000;
+                                let new_us = (current_us + offset_us)
+                                    .max(0)
+                                    .min((now.total_ms as i64 - 1) * 1_000);
+                                let seek_ms = (new_us / 1_000) as u64;
+                                app.command_sender
+                                    .send(Command::PlayTrackAt {
+                                        track_id: now.id.clone(),
+                                        quality: now.quality,
+                                        seek_ms,
+                                    })
+                                    .map_err(|_| anyhow!("MPRIS: failed to seek"))?;
+                            }
+                        }
+                    }
+                    mpris::MprisEvent::SetPosition(pos_us) => {
+                        if let Some(now) = app.now_playing.as_ref() {
+                            if now.quality != AudioQuality::Flac {
+                                let seek_ms =
+                                    ((pos_us.max(0) / 1_000) as u64).min(now.total_ms.saturating_sub(1));
+                                app.command_sender
+                                    .send(Command::PlayTrackAt {
+                                        track_id: now.id.clone(),
+                                        quality: now.quality,
+                                        seek_ms,
+                                    })
+                                    .map_err(|_| anyhow!("MPRIS: failed to set position"))?;
+                            }
+                        }
+                    }
+                    mpris::MprisEvent::SetShuffle(shuffle) => {
+                        if shuffle && !app.queue_tracks.is_empty() {
+                            let current_id = app
+                                .queue_index
+                                .and_then(|i| app.queue_tracks.get(i))
+                                .map(|t| t.0.clone());
+                            app.queue_tracks.shuffle(&mut thread_rng());
+                            if let Some(current) = current_id {
+                                app.queue_index =
+                                    app.queue_tracks.iter().position(|t| t.0 == current);
+                            }
+                            app.queue = app
+                                .queue_tracks
+                                .iter()
+                                .map(|(_, title, artist)| format!("{} - {}", title, artist))
+                                .collect();
+                            if let Some(i) = app.queue_index {
+                                app.queue_state.select(Some(i));
+                            }
+                            app.status_message = "Queue shuffled".into();
+                        }
+                    }
+                    mpris::MprisEvent::SetLoopStatus(loop_status) => {
+                        app.repeat_mode = match loop_status {
+                            LoopStatus::None => RepeatMode::Off,
+                            LoopStatus::Track => RepeatMode::One,
+                            LoopStatus::Playlist => RepeatMode::All,
+                        };
+                        app.status_message = format!("Repeat: {:?}", app.repeat_mode);
+                    }
+                    mpris::MprisEvent::SetVolume(v) => {
+                        app.volume = (v * 100.0).round().clamp(0.0, 100.0) as u16;
+                        app.command_sender
+                            .send(Command::SetVolume(app.volume))
+                            .map_err(|_| anyhow!("MPRIS: failed to set volume"))?;
+                    }
+                }
+            }
+
+            // Rate-limited position update (every ~1s) — no signal needed,
+            // D-Bus clients poll Position directly.
+            if mpris_handle.last_update.elapsed() >= Duration::from_secs(1) {
+                if let Some(now) = app.now_playing.as_ref() {
+                    mpris::update_position(&mpris_handle.server, now.current_ms);
+                }
+                mpris_handle.last_update = Instant::now();
+            }
+        }
+
         if let Some(handle) = audio_task.as_ref() {
             if handle.is_finished() {
                 let finished = audio_task
@@ -219,9 +633,78 @@ async fn run_tui_loop(
             }
         }
 
-        terminal.draw(|f| ui::render(f, app))?;
+        // Receive any completed cover-art downloads and decode them.
+        while let Ok((track_id, bytes)) = cover_rx.try_recv() {
+            if app.now_playing.as_ref().map(|n| n.id.as_str()) == Some(track_id.as_str()) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let mut png = Vec::new();
+                    let mut cursor = io::Cursor::new(&mut png);
+                    if img.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                        app.cover_art_png = Some(png);
+                    } else {
+                        app.cover_art_png = None;
+                    }
+                    app.cover_art = Some(img);
+                    app.cover_art_track_id = Some(track_id);
+                }
+            }
+        }
 
-        if event::poll(Duration::from_millis(50))? {
+        if force_full_redraw {
+            terminal.clear()?;
+            force_full_redraw = false;
+        }
+        let mut protocol_art_rect = None;
+        terminal.draw(|f| {
+            protocol_art_rect = ui::render(f, app, use_true_image_protocol);
+        })?;
+
+        if use_true_image_protocol {
+            if let (Some(rect), Some(track_id), Some(png)) = (
+                protocol_art_rect,
+                app.cover_art_track_id.as_ref(),
+                app.cover_art_png.as_ref(),
+            ) {
+                let sig = (track_id.clone(), rect.x, rect.y, rect.width, rect.height);
+                if last_drawn_cover_sig.as_ref() != Some(&sig) {
+                    match image_protocol {
+                        ImageProtocol::Kitty => {
+                            let _ = kitty_draw_png_at_rect(png, kitty_image_id, rect);
+                        }
+                        ImageProtocol::Ueberzugpp => {
+                            if let (Some(layer), Ok(path)) =
+                                (ueberzugpp_layer.as_mut(), write_cover_png_temp(png))
+                            {
+                                let _ = layer.add(&path, rect);
+                            }
+                        }
+                        ImageProtocol::None => {}
+                    }
+                    last_drawn_cover_sig = Some(sig);
+                }
+            } else if last_drawn_cover_sig.is_some() {
+                match image_protocol {
+                    ImageProtocol::Kitty => {
+                        let _ = kitty_delete_image(kitty_image_id);
+                    }
+                    ImageProtocol::Ueberzugpp => {
+                        if let Some(layer) = ueberzugpp_layer.as_mut() {
+                            let _ = layer.remove();
+                        }
+                    }
+                    ImageProtocol::None => {}
+                }
+                last_drawn_cover_sig = None;
+            }
+        }
+
+        let mut processed_input = false;
+        while event::poll(if processed_input {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(50)
+        })? {
+            processed_input = true;
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
@@ -229,7 +712,11 @@ async fn run_tui_loop(
                     }
 
                     match key.code {
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => {
+                            discord_rpc.clear();
+                            let _ = app.command_sender.send(Command::Shutdown);
+                            break 'ui;
+                        }
                         KeyCode::Char(c) if app.is_searching || app.active_panel == ActivePanel::Search => {
                             app.search_query.push(c);
                         }
@@ -305,6 +792,9 @@ async fn run_tui_loop(
                                             seek_ms,
                                         })
                                         .map_err(|_| anyhow!("failed to seek track"))?;
+                                    if let Some(mpris_handle) = mpris.as_mut() {
+                                        mpris::notify_seeked(&mpris_handle.server, seek_ms).await;
+                                    }
                                     app.status_message = format!("Seek: {}s", seek_ms / 1000);
                                 }
                             } else if app.active_panel == ActivePanel::PlayerInfo {
@@ -356,6 +846,9 @@ async fn run_tui_loop(
                                             seek_ms,
                                         })
                                         .map_err(|_| anyhow!("failed to seek track"))?;
+                                    if let Some(mpris_handle) = mpris.as_mut() {
+                                        mpris::notify_seeked(&mpris_handle.server, seek_ms).await;
+                                    }
                                     app.status_message = format!("Seek: {}s", seek_ms / 1000);
                                 }
                             } else if app.active_panel == ActivePanel::PlayerInfo {
@@ -395,6 +888,22 @@ async fn run_tui_loop(
                                 ActivePanel::Navigation => {
                                     let nav_idx = app.nav_state.selected().unwrap_or(0);
                                     match nav_idx {
+                                        0 => {
+                                            app.command_sender
+                                                .send(Command::LoadHome)
+                                                .map_err(|_| anyhow!("failed to send load home command"))?;
+                                            app.current_playlist_id = Some("__home__".to_string());
+                                            app.active_panel = ActivePanel::Main;
+                                            app.status_message = "Loading Home recommendations...".into();
+                                        }
+                                        1 => {
+                                            app.command_sender
+                                                .send(Command::LoadExplore)
+                                                .map_err(|_| anyhow!("failed to send load explore command"))?;
+                                            app.current_playlist_id = Some("__explore__".to_string());
+                                            app.active_panel = ActivePanel::Main;
+                                            app.status_message = "Loading Explore recommendations...".into();
+                                        }
                                         2 => {
                                             app.command_sender
                                                 .send(Command::LoadFavorites)
@@ -475,7 +984,12 @@ async fn run_tui_loop(
                                                         .map_err(|_| anyhow!("failed to set quality"))?;
                                                     let _ = save_config(&app.config);
                                                 }
-                                                3 => app.discord_rpc_enabled = !app.discord_rpc_enabled,
+                                                3 => {
+                                                    app.discord_rpc_enabled = !app.discord_rpc_enabled;
+                                                    app.config.discord_rpc_enabled = app.discord_rpc_enabled;
+                                                    let _ = save_config(&app.config);
+                                                    sync_discord_presence(discord_rpc, app);
+                                                }
                                                 4 => {
                                                     let new_arl = app.search_query.trim();
                                                     if new_arl.is_empty() {
@@ -656,6 +1170,14 @@ async fn run_tui_loop(
                                                 RepeatMode::All => RepeatMode::One,
                                                 RepeatMode::One => RepeatMode::Off,
                                             };
+                                            if let Some(mpris_handle) = mpris.as_mut() {
+                                                let loop_status = match app.repeat_mode {
+                                                    RepeatMode::Off => LoopStatus::None,
+                                                    RepeatMode::One => LoopStatus::Track,
+                                                    RepeatMode::All => LoopStatus::Playlist,
+                                                };
+                                                mpris::update_loop_and_shuffle(&mpris_handle.server, loop_status, false).await;
+                                            }
                                             app.status_message = format!("Repeat mode: {:?}", app.repeat_mode);
                                         }
                                         _ => {}
@@ -677,6 +1199,10 @@ async fn run_tui_loop(
                     }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(mouse_event),
+                Event::Resize(_, _) => {
+                    // Resize often cleans up stray lines, keep that behavior explicit.
+                    force_full_redraw = true;
+                }
                 _ => {}
             }
         }
@@ -688,32 +1214,85 @@ async fn run_tui_loop(
                     title,
                     artist,
                     quality,
+                    album_art_url,
+                    initial_ms,
                 } => {
+                    // Clear stale cover art immediately; new art arrives asynchronously.
+                    app.cover_art = None;
+                    app.cover_art_png = None;
+                    app.cover_art_track_id = None;
+                    if let Some(ref url) = album_art_url {
+                        let url = url.clone();
+                        let tid = id.clone();
+                        let tx = cover_tx.clone();
+                        tokio::spawn(async move {
+                            if let Ok(resp) = reqwest::get(&url).await {
+                                if let Ok(bytes) = resp.bytes().await {
+                                    let _ = tx.send((tid, bytes.to_vec()));
+                                }
+                            }
+                        });
+                    }
+                    if let Some(mpris_handle) = mpris.as_mut() {
+                        let can_go_next = app.queue_index
+                            .map(|i| i + 1 < app.queue_tracks.len())
+                            .unwrap_or(false);
+                        let can_go_previous = app.queue_index.unwrap_or(0) > 0;
+                        let meta = mpris::build_metadata(&id, &title, &artist, album_art_url.as_deref(), 0);
+                        mpris::set_track_metadata(&mpris_handle.server, meta, initial_ms, can_go_next, can_go_previous).await;
+                        mpris_handle.last_update = Instant::now();
+                    }
                     app.now_playing = Some(NowPlaying {
                         id,
                         title,
                         artist,
+                        album_art_url,
                         quality,
-                        current_ms: 0,
+                        current_ms: initial_ms,
                         total_ms: 224_000,
                     });
                     app.is_playing = true;
                     app.auto_transition_armed = false;
+                    sync_discord_presence(discord_rpc, app);
                 }
                 UiEvent::PlaybackProgress {
                     current_ms,
                     total_ms,
                 } => {
+                    let prev_total = app.now_playing.as_ref().map(|n| n.total_ms).unwrap_or(0);
                     if let Some(now) = app.now_playing.as_mut() {
                         now.current_ms = current_ms;
                         now.total_ms = total_ms.max(1);
                     }
+                    // On the first real total_ms, update the MPRIS metadata with proper duration
+                    if prev_total == 224_000 && total_ms != 224_000 {
+                        if let (Some(mpris_handle), Some(now)) = (mpris.as_mut(), app.now_playing.as_ref()) {
+                            let meta = mpris::build_metadata(
+                                &now.id, &now.title, &now.artist,
+                                now.album_art_url.as_deref(), total_ms,
+                            );
+                            let can_go_next = app.queue_index.map(|i| i + 1 < app.queue_tracks.len()).unwrap_or(false);
+                            let can_go_previous = app.queue_index.unwrap_or(0) > 0;
+                            mpris::set_track_metadata(&mpris_handle.server, meta, current_ms, can_go_next, can_go_previous).await;
+                        }
+                        sync_discord_presence(discord_rpc, app);
+                    }
                 }
                 UiEvent::PlaybackPaused => {
+                    if let Some(mpris_handle) = mpris.as_mut() {
+                        let pos_ms = app.now_playing.as_ref().map(|n| n.current_ms).unwrap_or(0);
+                        mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Paused, pos_ms).await;
+                    }
                     app.is_playing = false;
+                    sync_discord_presence(discord_rpc, app);
                 }
                 UiEvent::PlaybackResumed => {
+                    if let Some(mpris_handle) = mpris.as_mut() {
+                        let pos_ms = app.now_playing.as_ref().map(|n| n.current_ms).unwrap_or(0);
+                        mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Playing, pos_ms).await;
+                    }
                     app.is_playing = true;
+                    sync_discord_presence(discord_rpc, app);
                 }
                 UiEvent::PlaybackStopped => {
                     if let Some(current_idx) = app.queue_index {
@@ -757,20 +1336,103 @@ async fn run_tui_loop(
                                     app.queue_index = None;
                                     app.is_playing = false;
                                     app.status_message = "Queue finished".into();
+                                    if let Some(mpris_handle) = mpris.as_mut() {
+                                        mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Stopped, 0).await;
+                                    }
                                 }
                             }
                         } else {
                             app.queue_index = None;
                             app.is_playing = false;
                             app.status_message = "Queue finished".into();
+                            if let Some(mpris_handle) = mpris.as_mut() {
+                                mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Stopped, 0).await;
+                            }
                         }
                     } else {
                         app.is_playing = false;
+                        if let Some(mpris_handle) = mpris.as_mut() {
+                            mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Stopped, 0).await;
+                        }
+                    }
+                    if !app.is_playing {
+                        discord_rpc.clear();
                     }
                 }
                 UiEvent::Error(message) => {
+                    let is_status_message = message.starts_with("Status:")
+                        || message.contains("Loading")
+                        || message.contains("Auth")
+                        || message.contains("ARL")
+                        || message.contains("Client error")
+                        || message.contains("API Error")
+                        || message.contains("Search");
+
+                    if is_status_message {
+                        app.status_message = message;
+                        // Keep playback/RPC state intact for informational status updates.
+                        continue;
+                    }
+
+                    let noisy_terminal_output = message.to_lowercase().contains("underrun")
+                        || message.to_lowercase().contains("error.pcm")
+                        || message.to_lowercase().contains("alsa");
+                    if noisy_terminal_output {
+                        // If audio stack printed junk over the TUI, hard redraw once.
+                        force_full_redraw = true;
+                    }
+
+                    let looks_like_playback_failure = true;
+
+                    if looks_like_playback_failure {
+                        let failed_idx = app.queue_index;
+                        // Skip failed track and move forward in queue when possible.
+                        if let Some(current_idx) = failed_idx {
+                            let mut next_idx = current_idx + 1;
+                            if next_idx >= app.queue_tracks.len() {
+                                if app.repeat_mode == RepeatMode::All && app.queue_tracks.len() > 1 {
+                                    next_idx = 0;
+                                } else {
+                                    app.is_playing = false;
+                                    app.status_message = format!("{} | Skipped failed track", message);
+                                    if let Some(mpris_handle) = mpris.as_mut() {
+                                        mpris::set_playback_status(
+                                            &mpris_handle.server,
+                                            PlaybackStatus::Stopped,
+                                            0,
+                                        )
+                                        .await;
+                                    }
+                                    discord_rpc.clear();
+                                    continue;
+                                }
+                            }
+
+                            app.queue_index = Some(next_idx);
+                            app.queue_state.select(Some(next_idx));
+                            if let Some((track_id, _, _)) = app.queue_tracks.get(next_idx) {
+                                app.command_sender
+                                    .send(Command::AutoPlayTrack(track_id.clone()))
+                                    .map_err(|_| anyhow!("failed to skip to next track"))?;
+                                app.is_playing = true;
+                                app.status_message = format!(
+                                    "{} | Skipped to {}/{}",
+                                    message,
+                                    next_idx + 1,
+                                    app.queue_tracks.len()
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
                     app.status_message = message;
                     app.is_playing = false;
+                    if let Some(mpris_handle) = mpris.as_mut() {
+                        mpris::set_playback_status(&mpris_handle.server, PlaybackStatus::Stopped, 0)
+                            .await;
+                    }
+                    discord_rpc.clear();
                 }
                 UiEvent::PlaylistsLoaded(playlists) => {
                     app.playlists = playlists;
@@ -814,6 +1476,20 @@ async fn run_tui_loop(
                     );
                 }
             }
+        }
+    }
+
+    if use_true_image_protocol {
+        match image_protocol {
+            ImageProtocol::Kitty => {
+                let _ = kitty_delete_image(kitty_image_id);
+            }
+            ImageProtocol::Ueberzugpp => {
+                if let Some(layer) = ueberzugpp_layer.take() {
+                    layer.shutdown();
+                }
+            }
+            ImageProtocol::None => {}
         }
     }
 
@@ -1076,6 +1752,144 @@ async fn audio_worker_loop(
                     }
                 });
             }
+            Command::LoadHome => {
+                let event_tx_for_task = event_tx.clone();
+                let _ = event_tx_for_task.send(UiEvent::Error("Status: Loading Home recommendations...".into()));
+
+                tokio::spawn(async move {
+                    use api::DeezerClient;
+
+                    let arl = match load_saved_arl() {
+                        Ok(arl) => arl,
+                        Err(err) => {
+                            let _ = event_tx_for_task
+                                .send(UiEvent::Error(format!("Failed to load ARL: {}", err)));
+                            return;
+                        }
+                    };
+
+                    match DeezerClient::new(arl) {
+                        Ok(mut client) => match client.fetch_api_token().await {
+                            Ok(_) => match client.fetch_home_tracks().await {
+                                Ok(tracks) => {
+                                    let _ = event_tx_for_task.send(UiEvent::TracksLoaded(tracks));
+                                }
+                                Err(err) => {
+                                    let err_text = err.to_string();
+                                    let needs_token_retry = {
+                                        let lower = err_text.to_lowercase();
+                                        lower.contains("csrf") || lower.contains("token")
+                                    };
+                                    if needs_token_retry {
+                                        match client.fetch_api_token().await {
+                                            Ok(_) => match client.fetch_home_tracks().await {
+                                                Ok(tracks) => {
+                                                    let _ = event_tx_for_task
+                                                        .send(UiEvent::TracksLoaded(tracks));
+                                                }
+                                                Err(retry_err) => {
+                                                    let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                                        "Home recommendations error: {}",
+                                                        retry_err
+                                                    )));
+                                                }
+                                            },
+                                            Err(refresh_err) => {
+                                                let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                                    "Home auth refresh error: {}",
+                                                    refresh_err
+                                                )));
+                                            }
+                                        }
+                                    } else {
+                                        let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                            "Home recommendations error: {}",
+                                            err_text
+                                        )));
+                                    }
+                                }
+                            },
+                            Err(err) => {
+                                let _ = event_tx_for_task
+                                    .send(UiEvent::Error(format!("Auth error: {}", err)));
+                            }
+                        },
+                        Err(err) => {
+                            let _ = event_tx_for_task
+                                .send(UiEvent::Error(format!("Client error: {}", err)));
+                        }
+                    }
+                });
+            }
+            Command::LoadExplore => {
+                let event_tx_for_task = event_tx.clone();
+                let _ = event_tx_for_task.send(UiEvent::Error("Status: Loading Explore recommendations...".into()));
+
+                tokio::spawn(async move {
+                    use api::DeezerClient;
+
+                    let arl = match load_saved_arl() {
+                        Ok(arl) => arl,
+                        Err(err) => {
+                            let _ = event_tx_for_task
+                                .send(UiEvent::Error(format!("Failed to load ARL: {}", err)));
+                            return;
+                        }
+                    };
+
+                    match DeezerClient::new(arl) {
+                        Ok(mut client) => match client.fetch_api_token().await {
+                            Ok(_) => match client.fetch_explore_tracks().await {
+                                Ok(tracks) => {
+                                    let _ = event_tx_for_task.send(UiEvent::TracksLoaded(tracks));
+                                }
+                                Err(err) => {
+                                    let err_text = err.to_string();
+                                    let needs_token_retry = {
+                                        let lower = err_text.to_lowercase();
+                                        lower.contains("csrf") || lower.contains("token")
+                                    };
+                                    if needs_token_retry {
+                                        match client.fetch_api_token().await {
+                                            Ok(_) => match client.fetch_explore_tracks().await {
+                                                Ok(tracks) => {
+                                                    let _ = event_tx_for_task
+                                                        .send(UiEvent::TracksLoaded(tracks));
+                                                }
+                                                Err(retry_err) => {
+                                                    let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                                        "Explore recommendations error: {}",
+                                                        retry_err
+                                                    )));
+                                                }
+                                            },
+                                            Err(refresh_err) => {
+                                                let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                                    "Explore auth refresh error: {}",
+                                                    refresh_err
+                                                )));
+                                            }
+                                        }
+                                    } else {
+                                        let _ = event_tx_for_task.send(UiEvent::Error(format!(
+                                            "Explore recommendations error: {}",
+                                            err_text
+                                        )));
+                                    }
+                                }
+                            },
+                            Err(err) => {
+                                let _ = event_tx_for_task
+                                    .send(UiEvent::Error(format!("Auth error: {}", err)));
+                            }
+                        },
+                        Err(err) => {
+                            let _ = event_tx_for_task
+                                .send(UiEvent::Error(format!("Client error: {}", err)));
+                        }
+                    }
+                });
+            }
             Command::LoadFavorites => {
                 let event_tx_for_task = event_tx.clone();
                 let _ = event_tx_for_task.send(UiEvent::Error("Status: Loading favorites...".into()));
@@ -1168,10 +1982,29 @@ async fn audio_worker_loop(
                 crossfade_enabled = enabled;
                 crossfade_duration_ms = duration_ms;
             }
+            Command::Shutdown => {
+                if let Some(control_sender) = active_controls.as_ref() {
+                    let _ = control_sender.send(PlayerControl::Stop);
+                }
+                if let Some(handle) = active_playback_task.take() {
+                    let _ = handle.await;
+                }
+                active_controls = None;
+                break;
+            }
             Command::Next
             | Command::Previous
             | Command::ToggleCrossfade => {}
         }
+    }
+
+    // If command channel closes without an explicit shutdown command,
+    // still stop and join the active playback so process exit is immediate.
+    if let Some(control_sender) = active_controls.as_ref() {
+        let _ = control_sender.send(PlayerControl::Stop);
+    }
+    if let Some(handle) = active_playback_task.take() {
+        let _ = handle.await;
     }
 }
 
@@ -1276,6 +2109,8 @@ async fn run_play_track_pipeline(
         title: metadata.title.clone(),
         artist: metadata.artist.clone(),
         quality,
+        album_art_url: metadata.album_art_url.clone(),
+        initial_ms: if quality == AudioQuality::Flac { 0 } else { seek_ms },
     });
 
     let signed_url = client.fetch_media_url(&metadata.track_token, quality).await?;
