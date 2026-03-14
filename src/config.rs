@@ -40,6 +40,8 @@ pub struct Config {
     pub crossfade_duration_ms: u64,
     pub default_quality: AudioQuality,
     #[serde(default)]
+    pub discord_rpc_enabled: bool,
+    #[serde(default)]
     pub arl: String,
 }
 
@@ -50,6 +52,7 @@ impl Default for Config {
             crossfade_enabled: false,
             crossfade_duration_ms: 0,
             default_quality: AudioQuality::Kbps320,
+            discord_rpc_enabled: false,
             arl: String::new(),
         }
     }

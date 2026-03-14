@@ -21,8 +21,11 @@ pub enum Command {
     SetCrossfade { enabled: bool, duration_ms: u64 },
     ToggleCrossfade,
     LoadPlaylist(String),
+    LoadHome,
+    LoadExplore,
     LoadFavorites,
     Search(String),
+    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +39,8 @@ pub enum UiEvent {
         title: String,
         artist: String,
         quality: AudioQuality,
+        album_art_url: Option<String>,
+        initial_ms: u64,
     },
     PlaybackPaused,
     PlaybackResumed,
@@ -81,6 +86,7 @@ pub struct NowPlaying {
     pub quality: AudioQuality,
     pub current_ms: u64,
     pub total_ms: u64,
+    pub album_art_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +134,10 @@ pub struct App {
     pub is_searching: bool,
     pub search_query: String,
     pub auto_transition_armed: bool,
+    /// Decoded cover-art image for the current track (None until downloaded).
+    pub cover_art: Option<image::DynamicImage>,
+    pub cover_art_png: Option<Vec<u8>>,
+    pub cover_art_track_id: Option<String>,
 }
 
 impl App {
@@ -147,6 +157,8 @@ impl App {
         let mut settings_state = ListState::default();
         settings_state.select(Some(0));
 
+        let discord_rpc_enabled = config.discord_rpc_enabled;
+
         Self {
             volume: 100,
             config,
@@ -154,7 +166,7 @@ impl App {
             current_route: Route::Library,
             now_playing: None,
             is_playing: false,
-            discord_rpc_enabled: false,
+            discord_rpc_enabled,
             active_panel: ActivePanel::Navigation,
             nav_state,
             playlist_state,
@@ -179,6 +191,9 @@ impl App {
             is_searching: false,
             search_query: String::new(),
             auto_transition_armed: false,
+            cover_art: None,
+            cover_art_png: None,
+            cover_art_track_id: None,
         }
     }
 
