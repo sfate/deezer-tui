@@ -60,6 +60,16 @@ jobs:
               const match = ref.match(/(?:^|[/-])(?:issue-|issues-)?(\d+)(?:[/-]|$)/i);
               if (match) {
                 issueNumbers = [Number(match[1])];
+              } else if (eventName === "push") {
+                const commitText = (context.payload.commits || [])
+                  .map((commit) => `${commit.message || ""}\n${commit.body || ""}`)
+                  .join("\n");
+                const commitMatches = commitText.match(/#(\d+)/g) || [];
+                issueNumbers = [...new Set(commitMatches.map((value) => Number(value.slice(1))))];
+
+                if (issueNumbers.length === 0) {
+                  core.notice(`No issue number found in branch name "${ref}" or pushed commit messages.`);
+                }
               } else {
                 core.notice(`No issue number found in branch name "${ref}".`);
               }
