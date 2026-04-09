@@ -3,8 +3,8 @@ name: Project Columns
 on:
   create:
   push:
-    branches:
-      - "**"
+    branches-ignore:
+      - main
   pull_request:
     types:
       - opened
@@ -131,13 +131,13 @@ jobs:
         env:
           PROJECTS_OWNER: ${{ vars.PROJECTS_OWNER || github.repository_owner }}
           PROJECTS_PROJECT_NUMBER: ${{ vars.PROJECTS_PROJECT_NUMBER }}
-          PROJECTS_PROJECT_TITLE: ${{ vars.PROJECTS_PROJECT_TITLE || 'Sunburn' }}
+          PROJECTS_PROJECT_TITLE: ${{ vars.PROJECTS_PROJECT_TITLE || github.event.repository.name }}
         with:
           github-token: ${{ secrets.PROJECTS_TOKEN || secrets.GA_ACCESS_TOKEN || github.token }}
           script: |
             const projectOwner = process.env.PROJECTS_OWNER || context.repo.owner;
             const projectNumber = process.env.PROJECTS_PROJECT_NUMBER;
-            const projectTitle = process.env.PROJECTS_PROJECT_TITLE || "Sunburn";
+            const projectTitle = process.env.PROJECTS_PROJECT_TITLE || context.repo.repo;
             const targetColumn = `${{ steps.context.outputs.target_column }}`;
             const issues = JSON.parse(`${{ steps.context.outputs.issues }}`);
 
