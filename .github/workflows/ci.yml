@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
-      - "ob-*"
   pull_request:
-    branches:
-      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 jobs:
   test-and-lint:
