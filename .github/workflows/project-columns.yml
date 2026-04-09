@@ -147,84 +147,9 @@ jobs:
             }
 
             const projectQuery = `
-              query($owner: String!, $project: String!) {
-                repositoryOwner(login: $owner) {
-                  __typename
-                  ... on User {
-                    projectsV2(first: 20, query: $project) {
-                      nodes {
-                        id
-                        number
-                        title
-                        fields(first: 50) {
-                          nodes {
-                            ... on ProjectV2FieldCommon {
-                              id
-                              name
-                            }
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              name
-                              options {
-                                id
-                                name
-                              }
-                            }
-                          }
-                        }
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on Issue {
-                                id
-                                number
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                  ... on Organization {
-                    projectsV2(first: 20, query: $project) {
-                      nodes {
-                        id
-                        number
-                        title
-                        fields(first: 50) {
-                          nodes {
-                            ... on ProjectV2FieldCommon {
-                              id
-                              name
-                            }
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              name
-                              options {
-                                id
-                                name
-                              }
-                            }
-                          }
-                        }
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on Issue {
-                                id
-                                number
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                repository(owner: $owner, name: "${context.repo.repo}") {
-                  recentProjects(first: 20) {
+              query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  recentProjects(first: 100) {
                     nodes {
                       id
                       ... on ProjectV2 {
@@ -266,23 +191,22 @@ jobs:
 
             const projectData = await github.graphql(projectQuery, {
               owner: projectOwner,
-              project: projectTitle,
+              repo: context.repo.repo,
             });
 
-            const ownerProjects = projectData.repositoryOwner?.projectsV2?.nodes || [];
             const recentProjects = (projectData.repository?.recentProjects?.nodes || []).filter(
               (candidate) => candidate && candidate.title
             );
-            const projects = [...ownerProjects, ...recentProjects];
+            const projects = recentProjects;
             const project = projectNumber
               ? projects.find((candidate) => String(candidate.number) === String(projectNumber))
-              : projects.find((candidate) => candidate.title === projectTitle);
+              : (projects.length === 1 ? projects[0] : null);
 
             if (!project) {
               core.setFailed(
                 projectNumber
                   ? `ProjectV2 #${projectNumber} was not found for owner "${projectOwner}".`
-                  : `ProjectV2 "${projectTitle}" was not found for owner "${projectOwner}".`
+                  : `Expected exactly one accessible repository project for "${context.repo.repo}", but found ${projects.length}.`
               );
               return;
             }
