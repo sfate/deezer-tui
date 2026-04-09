@@ -4,7 +4,7 @@
 
 ## Controls
 
-    Arrow Keys - Navigate
+    Arrow Keys / HJKL - Navigate
 
     TAB - Switch Focus
 

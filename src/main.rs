@@ -777,7 +777,7 @@ async fn run_tui_loop(
                         }
                         KeyCode::Down | KeyCode::Char('j') if !app.is_searching => app.handle_down(),
                         KeyCode::Up | KeyCode::Char('k') if !app.is_searching => app.handle_up(),
-                        KeyCode::Left if !app.is_searching => {
+                        KeyCode::Left | KeyCode::Char('h') if !app.is_searching => {
                             if app.active_panel == ActivePanel::PlayerProgress {
                                 if let Some(now) = app.now_playing.as_ref() {
                                     if now.quality == AudioQuality::Flac {
@@ -829,7 +829,7 @@ async fn run_tui_loop(
                                 app.handle_left();
                             }
                         }
-                        KeyCode::Right if !app.is_searching => {
+                        KeyCode::Right | KeyCode::Char('l') if !app.is_searching => {
                             if app.active_panel == ActivePanel::Main && app.showing_search_results {
                                 app.switch_search_category_right();
                             } else if app.active_panel == ActivePanel::PlayerProgress {
