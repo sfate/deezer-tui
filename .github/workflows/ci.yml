@@ -31,19 +31,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check
-        run: cargo check --locked
+        run: make check
 
       - name: Test
-        run: cargo test --locked
+        run: make test
 
       - name: Lint
-        run: >
-          cargo clippy --locked --all-targets --all-features --
-          -D warnings
-          -A dead_code
-          -A clippy::manual_is_multiple_of
-          -A clippy::collapsible_if
-          -A clippy::useless_conversion
-          -A clippy::useless_format
-          -A clippy::collapsible_match
-          -A clippy::useless_vec
+        run: make lint
