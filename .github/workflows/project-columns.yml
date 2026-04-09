@@ -154,6 +154,7 @@ jobs:
                     projectsV2(first: 20, query: $project) {
                       nodes {
                         id
+                        number
                         title
                         fields(first: 50) {
                           nodes {
@@ -189,6 +190,45 @@ jobs:
                     projectsV2(first: 20, query: $project) {
                       nodes {
                         id
+                        number
+                        title
+                        fields(first: 50) {
+                          nodes {
+                            ... on ProjectV2FieldCommon {
+                              id
+                              name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on Issue {
+                                id
+                                number
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                repository(owner: $owner, name: "${context.repo.repo}") {
+                  recentProjects(first: 20) {
+                    nodes {
+                      id
+                      ... on ProjectV2 {
+                        number
                         title
                         fields(first: 50) {
                           nodes {
@@ -229,7 +269,11 @@ jobs:
               project: projectTitle,
             });
 
-            const projects = projectData.repositoryOwner?.projectsV2?.nodes || [];
+            const ownerProjects = projectData.repositoryOwner?.projectsV2?.nodes || [];
+            const recentProjects = (projectData.repository?.recentProjects?.nodes || []).filter(
+              (candidate) => candidate && candidate.title
+            );
+            const projects = [...ownerProjects, ...recentProjects];
             const project = projectNumber
               ? projects.find((candidate) => String(candidate.number) === String(projectNumber))
               : projects.find((candidate) => candidate.title === projectTitle);
