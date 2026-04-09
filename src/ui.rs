@@ -486,7 +486,7 @@ pub fn render(
             )),
             Line::from(Span::styled("TAB - Switch Focus", Style::default().fg(Color::DarkGray))),
             Line::from(Span::styled("Enter - Select", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("P - Play/Pause", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled("P / Space - Play/Pause", Style::default().fg(Color::DarkGray))),
             Line::from(Span::styled("/ - Search", Style::default().fg(Color::DarkGray))),
             Line::from(Span::styled("Q - Quit", Style::default().fg(Color::DarkGray))),
         ])
