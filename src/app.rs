@@ -14,9 +14,12 @@ pub enum Command {
     },
     Pause,
     Resume,
+    Next,
+    Previous,
     SetVolume(u16),
     SetQuality(AudioQuality),
     SetCrossfade { enabled: bool, duration_ms: u64 },
+    ToggleCrossfade,
     LoadPlaylist(String),
     LoadHome,
     LoadExplore,
@@ -66,6 +69,15 @@ pub enum RepeatMode {
     One,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    Library,
+    Search,
+    Queue,
+    Lyrics,
+    Settings,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowPlaying {
     pub id: String,
@@ -93,6 +105,7 @@ pub enum ActivePanel {
 pub struct App {
     pub config: Config,
     pub command_sender: mpsc::UnboundedSender<Command>,
+    pub current_route: Route,
     pub now_playing: Option<NowPlaying>,
     pub is_playing: bool,
     pub volume: u16,
@@ -150,6 +163,7 @@ impl App {
             volume: 100,
             config,
             command_sender,
+            current_route: Route::Library,
             now_playing: None,
             is_playing: false,
             discord_rpc_enabled,

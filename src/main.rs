@@ -1992,6 +1992,9 @@ async fn audio_worker_loop(
                 active_controls = None;
                 break;
             }
+            Command::Next
+            | Command::Previous
+            | Command::ToggleCrossfade => {}
         }
     }
 
