@@ -68,7 +68,22 @@ jobs:
                 issueNumbers = [...new Set(commitMatches.map((value) => Number(value.slice(1))))];
 
                 if (issueNumbers.length === 0) {
-                  core.notice(`No issue number found in branch name "${ref}" or pushed commit messages.`);
+                  const { data: pullRequests } = await github.rest.pulls.list({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    state: "open",
+                    head: `${context.repo.owner}:${ref}`,
+                  });
+
+                  const prText = pullRequests
+                    .map((pr) => `${pr.title || ""}\n${pr.body || ""}`)
+                    .join("\n");
+                  const prMatches = prText.match(/#(\d+)/g) || [];
+                  issueNumbers = [...new Set(prMatches.map((value) => Number(value.slice(1))))];
+                }
+
+                if (issueNumbers.length === 0) {
+                  core.notice(`No issue number found in branch name "${ref}", pushed commit messages, or open PR metadata.`);
                 }
               } else {
                 core.notice(`No issue number found in branch name "${ref}".`);
