@@ -2,6 +2,9 @@ name: Project Columns
 
 on:
   create:
+  push:
+    branches:
+      - "**"
   pull_request:
     types:
       - opened
@@ -17,7 +20,7 @@ permissions:
 
 jobs:
   move-issue:
-    if: github.event_name == 'create' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'create' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
 
     steps:
@@ -30,19 +33,30 @@ jobs:
             let targetColumn = "";
             let issueNumbers = [];
 
-            if (eventName === "create") {
+            if (eventName === "create" || eventName === "push") {
               if (context.payload.ref_type !== "branch") {
-                core.notice("Skipping create event because it is not a branch.");
-                core.setOutput("should_move", "false");
-                return;
+                if (eventName === "create") {
+                  core.notice("Skipping create event because it is not a branch.");
+                  core.setOutput("should_move", "false");
+                  return;
+                }
               }
 
               targetColumn = "In Progress";
 
-              // Branch creation payloads do not include linked issues, so the branch
+              // Branch-triggered payloads do not include linked issues, so the branch
               // name must contain the issue number, e.g. `123-short-title` or
               // `issue-123-short-title`.
-              const ref = context.payload.ref || "";
+              const ref = eventName === "push"
+                ? (context.payload.ref || "").replace(/^refs\/heads\//, "")
+                : (context.payload.ref || "");
+
+              if (!ref || ref === "main") {
+                core.notice(`Skipping branch event for ref "${ref}".`);
+                core.setOutput("should_move", "false");
+                return;
+              }
+
               const match = ref.match(/(?:^|[/-])(?:issue-|issues-)?(\d+)(?:[/-]|$)/i);
               if (match) {
                 issueNumbers = [Number(match[1])];
@@ -72,7 +86,17 @@ jobs:
               }
             }
 
-            const issues = issueNumbers.map((number) => ({ issue: { number } }));
+            const issues = await Promise.all(
+              issueNumbers.map(async (number) => {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: number,
+                });
+
+                return { issue };
+              })
+            );
             core.setOutput("issues", JSON.stringify(issues));
             core.setOutput("target_column", targetColumn);
             core.setOutput("should_move", String(Boolean(targetColumn) && issues.length > 0));
