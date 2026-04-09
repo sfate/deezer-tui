@@ -16,7 +16,6 @@ permissions:
   contents: read
   issues: write
   pull-requests: read
-  repository-projects: write
 
 jobs:
   move-issue:
@@ -126,11 +125,177 @@ jobs:
             core.setOutput("target_column", targetColumn);
             core.setOutput("should_move", String(Boolean(targetColumn) && issues.length > 0));
 
-      - name: Move issue card
+      - name: Move issue in ProjectV2
         if: steps.context.outputs.should_move == 'true'
-        uses: kin/gh-action-move-issues-to-column@v1.0
+        uses: actions/github-script@v7
         with:
-          access-token: ${{ secrets.GA_ACCESS_TOKEN || github.token }}
-          project-name: Sunburn
-          target-column: ${{ steps.context.outputs.target_column }}
-          issues: ${{ steps.context.outputs.issues }}
+          github-token: ${{ secrets.PROJECTS_TOKEN || secrets.GA_ACCESS_TOKEN || github.token }}
+          script: |
+            const projectName = "Sunburn";
+            const targetColumn = `${{ steps.context.outputs.target_column }}`;
+            const issues = JSON.parse(`${{ steps.context.outputs.issues }}`);
+
+            if (issues.length === 0) {
+              core.notice("No issues to move.");
+              return;
+            }
+
+            const projectQuery = `
+              query($owner: String!, $project: String!) {
+                repositoryOwner(login: $owner) {
+                  __typename
+                  ... on User {
+                    projectsV2(first: 20, query: $project) {
+                      nodes {
+                        id
+                        title
+                        fields(first: 50) {
+                          nodes {
+                            ... on ProjectV2FieldCommon {
+                              id
+                              name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on Issue {
+                                id
+                                number
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  ... on Organization {
+                    projectsV2(first: 20, query: $project) {
+                      nodes {
+                        id
+                        title
+                        fields(first: 50) {
+                          nodes {
+                            ... on ProjectV2FieldCommon {
+                              id
+                              name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on Issue {
+                                id
+                                number
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const projectData = await github.graphql(projectQuery, {
+              owner: context.repo.owner,
+              project: projectName,
+            });
+
+            const projects = projectData.repositoryOwner?.projectsV2?.nodes || [];
+            const project = projects.find((candidate) => candidate.title === projectName);
+
+            if (!project) {
+              core.setFailed(`ProjectV2 "${projectName}" was not found for owner "${context.repo.owner}".`);
+              return;
+            }
+
+            const statusField = project.fields.nodes.find(
+              (field) => field.name && field.name.toLowerCase() === "status"
+            );
+
+            if (!statusField?.options) {
+              core.setFailed(`ProjectV2 "${projectName}" does not have a single-select Status field.`);
+              return;
+            }
+
+            const targetOption = statusField.options.find(
+              (option) => option.name.toLowerCase() === targetColumn.toLowerCase()
+            );
+
+            if (!targetOption) {
+              core.setFailed(`Status option "${targetColumn}" was not found in project "${projectName}".`);
+              return;
+            }
+
+            const addItemMutation = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const updateStatusMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            for (const entry of issues) {
+              const issue = entry.issue;
+              let itemId = project.items.nodes.find(
+                (item) => item.content?.number === issue.number
+              )?.id;
+
+              if (!itemId) {
+                const added = await github.graphql(addItemMutation, {
+                  projectId: project.id,
+                  contentId: issue.node_id,
+                });
+                itemId = added.addProjectV2ItemById.item.id;
+              }
+
+              await github.graphql(updateStatusMutation, {
+                projectId: project.id,
+                itemId,
+                fieldId: statusField.id,
+                optionId: targetOption.id,
+              });
+
+              core.info(`Moved issue #${issue.number} to "${targetColumn}" in project "${projectName}".`);
+            }
