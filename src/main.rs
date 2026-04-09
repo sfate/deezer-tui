@@ -747,7 +747,7 @@ async fn run_tui_loop(
                                 Theme::NcmpcppBlue => Theme::SpotifyDark,
                             };
                         }
-                        KeyCode::Char('p') if !app.is_searching => {
+                        KeyCode::Char('p') | KeyCode::Char(' ') if !app.is_searching => {
                             if app.now_playing.is_none() {
                                 app.command_sender
                                     .send(Command::PlayTrack("3135556".to_string()))
