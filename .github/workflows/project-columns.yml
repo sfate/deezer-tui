@@ -128,10 +128,16 @@ jobs:
       - name: Move issue in ProjectV2
         if: steps.context.outputs.should_move == 'true'
         uses: actions/github-script@v7
+        env:
+          PROJECTS_OWNER: ${{ vars.PROJECTS_OWNER || github.repository_owner }}
+          PROJECTS_PROJECT_NUMBER: ${{ vars.PROJECTS_PROJECT_NUMBER }}
+          PROJECTS_PROJECT_TITLE: ${{ vars.PROJECTS_PROJECT_TITLE || 'Sunburn' }}
         with:
           github-token: ${{ secrets.PROJECTS_TOKEN || secrets.GA_ACCESS_TOKEN || github.token }}
           script: |
-            const projectName = "Sunburn";
+            const projectOwner = process.env.PROJECTS_OWNER || context.repo.owner;
+            const projectNumber = process.env.PROJECTS_PROJECT_NUMBER;
+            const projectTitle = process.env.PROJECTS_PROJECT_TITLE || "Sunburn";
             const targetColumn = `${{ steps.context.outputs.target_column }}`;
             const issues = JSON.parse(`${{ steps.context.outputs.issues }}`);
 
@@ -219,15 +225,21 @@ jobs:
             `;
 
             const projectData = await github.graphql(projectQuery, {
-              owner: context.repo.owner,
-              project: projectName,
+              owner: projectOwner,
+              project: projectTitle,
             });
 
             const projects = projectData.repositoryOwner?.projectsV2?.nodes || [];
-            const project = projects.find((candidate) => candidate.title === projectName);
+            const project = projectNumber
+              ? projects.find((candidate) => String(candidate.number) === String(projectNumber))
+              : projects.find((candidate) => candidate.title === projectTitle);
 
             if (!project) {
-              core.setFailed(`ProjectV2 "${projectName}" was not found for owner "${context.repo.owner}".`);
+              core.setFailed(
+                projectNumber
+                  ? `ProjectV2 #${projectNumber} was not found for owner "${projectOwner}".`
+                  : `ProjectV2 "${projectTitle}" was not found for owner "${projectOwner}".`
+              );
               return;
             }
 
@@ -245,7 +257,7 @@ jobs:
             );
 
             if (!targetOption) {
-              core.setFailed(`Status option "${targetColumn}" was not found in project "${projectName}".`);
+              core.setFailed(`Status option "${targetColumn}" was not found in project "${project.title}".`);
               return;
             }
 
@@ -297,5 +309,5 @@ jobs:
                 optionId: targetOption.id,
               });
 
-              core.info(`Moved issue #${issue.number} to "${targetColumn}" in project "${projectName}".`);
+              core.info(`Moved issue #${issue.number} to "${targetColumn}" in project "${project.title}".`);
             }
