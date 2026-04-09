@@ -481,7 +481,7 @@ pub fn render(
         // Startup controls page
         let controls = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Arrow Keys - Navigate",
+                "Arrow Keys / HJKL - Navigate",
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled("TAB - Switch Focus", Style::default().fg(Color::DarkGray))),
