@@ -15,6 +15,7 @@ pub enum AudioQuality {
 }
 
 impl AudioQuality {
+    #[allow(dead_code)]
     pub const fn format_code(self) -> u8 {
         match self {
             Self::Kbps128 => 1,
@@ -23,6 +24,7 @@ impl AudioQuality {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn from_format_code(code: u8) -> Option<Self> {
         match code {
             1 => Some(Self::Kbps128),

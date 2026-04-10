@@ -1,9 +1,11 @@
 use ratatui::widgets::ListState;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 use crate::config::{AudioQuality, Config};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Command {
     PlayTrack(String),
     AutoPlayTrack(String),
@@ -18,10 +20,19 @@ pub enum Command {
     Previous,
     SetVolume(u16),
     SetQuality(AudioQuality),
-    SetCrossfade { enabled: bool, duration_ms: u64 },
+    SetCrossfade {
+        enabled: bool,
+        duration_ms: u64,
+    },
     ToggleCrossfade,
     LoadPlaylist(String),
     LoadHome,
+    LoadFlow,
+    LoadFlowPage {
+        index: usize,
+        append: bool,
+        autoplay: bool,
+    },
     LoadExplore,
     LoadFavorites,
     Search(String),
@@ -48,6 +59,12 @@ pub enum UiEvent {
     Error(String),
     PlaylistsLoaded(Vec<(String, String)>),
     TracksLoaded(Vec<(String, String, String)>),
+    FlowTracksLoaded {
+        tracks: Vec<(String, String, String)>,
+        append: bool,
+        autoplay: bool,
+        next_index: usize,
+    },
     SearchResultsLoaded {
         tracks: Vec<(String, String, String)>,
         playlists: Vec<(String, String)>,
@@ -70,6 +87,7 @@ pub enum RepeatMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Route {
     Library,
     Search,
@@ -105,6 +123,7 @@ pub enum ActivePanel {
 pub struct App {
     pub config: Config,
     pub command_sender: mpsc::UnboundedSender<Command>,
+    #[allow(dead_code)]
     pub current_route: Route,
     pub now_playing: Option<NowPlaying>,
     pub is_playing: bool,
@@ -134,6 +153,8 @@ pub struct App {
     pub is_searching: bool,
     pub search_query: String,
     pub auto_transition_armed: bool,
+    pub flow_next_index: usize,
+    pub flow_loading_more: bool,
     /// Decoded cover-art image for the current track (None until downloaded).
     pub cover_art: Option<image::DynamicImage>,
     pub cover_art_png: Option<Vec<u8>>,
@@ -191,6 +212,8 @@ impl App {
             is_searching: false,
             search_query: String::new(),
             auto_transition_armed: false,
+            flow_next_index: 0,
+            flow_loading_more: false,
             cover_art: None,
             cover_art_png: None,
             cover_art_track_id: None,
@@ -201,7 +224,7 @@ impl App {
         match self.active_panel {
             ActivePanel::Navigation => {
                 let current = self.nav_state.selected().unwrap_or(0);
-                if current >= 3 {
+                if current >= 4 {
                     self.active_panel = ActivePanel::Playlists;
                     if !self.playlists.is_empty() {
                         self.playlist_state.select(Some(0));
@@ -298,14 +321,14 @@ impl App {
             ActivePanel::Playlists => {
                 if self.playlists.is_empty() {
                     self.active_panel = ActivePanel::Navigation;
-                    self.nav_state.select(Some(3));
+                    self.nav_state.select(Some(4));
                     return;
                 }
 
                 let current = self.playlist_state.selected().unwrap_or(0);
                 if current == 0 {
                     self.active_panel = ActivePanel::Navigation;
-                    self.nav_state.select(Some(3));
+                    self.nav_state.select(Some(4));
                 } else {
                     self.playlist_state.select(Some(current - 1));
                 }
@@ -411,4 +434,91 @@ impl App {
             self.main_state.select(Some(0));
         }
     }
+
+    pub fn load_flow_tracks(
+        &mut self,
+        tracks: Vec<(String, String, String)>,
+        autoplay: bool,
+    ) -> Option<String> {
+        self.current_tracks = tracks;
+        self.showing_search_results = false;
+        self.search_playlists.clear();
+        self.search_artists.clear();
+        self.main_state.select(Some(0));
+        self.viewing_settings = false;
+        self.active_panel = ActivePanel::Main;
+
+        if autoplay && !self.current_tracks.is_empty() {
+            self.queue_tracks = self.current_tracks.clone();
+            self.queue = self
+                .queue_tracks
+                .iter()
+                .map(|(_, title, artist)| format!("{} - {}", title, artist))
+                .collect();
+            self.queue_index = Some(0);
+            self.queue_state.select(Some(0));
+            self.is_playing = true;
+            return self
+                .queue_tracks
+                .first()
+                .map(|(track_id, _, _)| track_id.clone());
+        }
+
+        None
+    }
+
+    pub fn append_flow_tracks(
+        &mut self,
+        tracks: Vec<(String, String, String)>,
+        autoplay: bool,
+    ) -> Option<String> {
+        let existing_ids: HashSet<&str> = self
+            .queue_tracks
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+        let appended_tracks: Vec<(String, String, String)> = tracks
+            .into_iter()
+            .filter(|(id, _, _)| !existing_ids.contains(id.as_str()))
+            .collect();
+
+        if appended_tracks.is_empty() {
+            self.queue_index = None;
+            self.is_playing = false;
+            return None;
+        }
+
+        let start_idx = self.queue_tracks.len();
+        self.current_tracks.extend(appended_tracks.iter().cloned());
+        self.queue_tracks.extend(appended_tracks.iter().cloned());
+        self.queue.extend(
+            appended_tracks
+                .iter()
+                .map(|(_, title, artist)| format!("{} - {}", title, artist)),
+        );
+
+        if autoplay {
+            self.queue_index = Some(start_idx);
+            self.queue_state.select(Some(start_idx));
+            self.is_playing = true;
+            return self
+                .queue_tracks
+                .get(start_idx)
+                .map(|(track_id, _, _)| track_id.clone());
+        }
+
+        None
+    }
+
+    pub fn should_load_more_flow(&self) -> bool {
+        self.current_playlist_id.as_deref() == Some("__flow__")
+            && !self.flow_loading_more
+            && self
+                .queue_index
+                .map(|current_idx| current_idx + 1 >= self.queue_tracks.len())
+                .unwrap_or(false)
+    }
 }
+
+#[cfg(test)]
+mod tests;

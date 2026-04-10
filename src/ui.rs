@@ -92,13 +92,12 @@ pub fn render(
         ])
         .split(workspace[0]);
 
-    let highlight_style = Style::default()
-        .fg(accent)
-        .add_modifier(Modifier::BOLD);
+    let highlight_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
 
     // Navigation menu
     let nav_items = vec![
         ListItem::new("Home"),
+        ListItem::new("Flow"),
         ListItem::new("Explore"),
         ListItem::new("Favorites"),
         ListItem::new("Settings"),
@@ -200,13 +199,16 @@ pub fn render(
 
     // Main view header
     let is_home_page = app.current_playlist_id.as_deref() == Some("__home__");
+    let is_flow_page = app.current_playlist_id.as_deref() == Some("__flow__");
     let is_explore_page = app.current_playlist_id.as_deref() == Some("__explore__");
 
     let header = if app.viewing_settings {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Settings",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "Customize your playback experience",
@@ -233,11 +235,15 @@ pub fn render(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Search Results",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 format!("{}  {}  {}", tracks_tab, playlists_tab, artists_tab),
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 format!(
@@ -277,7 +283,9 @@ pub fn render(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Home - Recommended For You",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "Tracks personalized from your Deezer account",
@@ -288,11 +296,30 @@ pub fn render(
                 Style::default().fg(Color::DarkGray),
             )),
         ])
+    } else if is_flow_page {
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Flow - Endless Personal Mix",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Your Deezer Flow feed for continuous personalized playback",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                format!("{} Flow tracks", app.current_tracks.len()),
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
     } else if is_explore_page {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Explore - Trending And Discovery",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "Live recommendations from your Deezer account session",
@@ -325,7 +352,9 @@ pub fn render(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 format!("Playlist: {}({})", playlist_name, playlist_id),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 format!("{} tracks", app.current_tracks.len()),
@@ -336,7 +365,9 @@ pub fn render(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Deezer-TUI",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "Welcome - use the shortcuts below to get started",
@@ -349,6 +380,8 @@ pub fn render(
         "Settings"
     } else if is_home_page {
         "Home"
+    } else if is_flow_page {
+        "Flow"
     } else if is_explore_page {
         "Explore"
     } else if app.showing_search_results {
@@ -378,12 +411,13 @@ pub fn render(
         let settings_items = vec![
             format!(
                 "Crossfade: [{}]",
-                if app.config.crossfade_enabled { "On" } else { "Off" }
+                if app.config.crossfade_enabled {
+                    "On"
+                } else {
+                    "Off"
+                }
             ),
-            format!(
-                "Crossfade Duration: {}ms",
-                app.config.crossfade_duration_ms
-            ),
+            format!("Crossfade Duration: {}ms", app.config.crossfade_duration_ms),
             format!("Quality: [{}]", quality_label(app.config.default_quality)),
             format!(
                 "Discord RPC: [{}]",
@@ -408,28 +442,33 @@ pub fn render(
                     .padding(Padding::new(1, 1, 0, 0)),
             );
 
-        f.render_stateful_widget(settings_list, main_content_sections[1], &mut app.settings_state);
+        f.render_stateful_widget(
+            settings_list,
+            main_content_sections[1],
+            &mut app.settings_state,
+        );
     } else if app.showing_search_results {
         // Tracks list view
-        let track_items: Vec<ListItem> = match app.search_category {
-            SearchCategory::Tracks => {
-                let mut items: Vec<ListItem> = vec![ListItem::new("[ Play Playlist ]")];
-                items.extend(app.current_tracks.iter().map(|(_, title, artist)| {
-                    ListItem::new(format!("{} - {}", title, artist))
-                }));
-                items
-            }
-            SearchCategory::Playlists => app
-                .search_playlists
-                .iter()
-                .map(|(_, title)| ListItem::new(format!("{}", title)))
-                .collect(),
-            SearchCategory::Artists => app
-                .search_artists
-                .iter()
-                .map(|(_, name)| ListItem::new(format!("{}", name)))
-                .collect(),
-        };
+        let track_items: Vec<ListItem> =
+            match app.search_category {
+                SearchCategory::Tracks => {
+                    let mut items: Vec<ListItem> = vec![ListItem::new("[ Play Playlist ]")];
+                    items.extend(app.current_tracks.iter().map(|(_, title, artist)| {
+                        ListItem::new(format!("{} - {}", title, artist))
+                    }));
+                    items
+                }
+                SearchCategory::Playlists => app
+                    .search_playlists
+                    .iter()
+                    .map(|(_, title)| ListItem::new(format!("{}", title)))
+                    .collect(),
+                SearchCategory::Artists => app
+                    .search_artists
+                    .iter()
+                    .map(|(_, name)| ListItem::new(format!("{}", name)))
+                    .collect(),
+            };
 
         let empty_hint = track_items.is_empty();
 
@@ -461,9 +500,11 @@ pub fn render(
         }
     } else if !app.current_tracks.is_empty() {
         let mut track_items: Vec<ListItem> = vec![ListItem::new("[ Play Playlist ]")];
-        track_items.extend(app.current_tracks.iter().map(|(_, title, artist)| {
-            ListItem::new(format!("{} - {}", title, artist))
-        }));
+        track_items.extend(
+            app.current_tracks
+                .iter()
+                .map(|(_, title, artist)| ListItem::new(format!("{} - {}", title, artist))),
+        );
 
         let tracks_list = List::new(track_items)
             .style(Style::default().fg(Color::White))
@@ -482,13 +523,30 @@ pub fn render(
         let controls = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Arrow Keys / HJKL - Navigate",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled("TAB - Switch Focus", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("Enter - Select", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("P / Space - Play/Pause", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("/ - Search", Style::default().fg(Color::DarkGray))),
-            Line::from(Span::styled("Q - Quit", Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                "TAB - Switch Focus",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "Enter - Select",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "P / Space - Play/Pause",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "/ - Search",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "Q - Quit",
+                Style::default().fg(Color::DarkGray),
+            )),
         ])
         .block(
             Block::default()
@@ -530,9 +588,14 @@ pub fn render(
     let track_info = Paragraph::new(vec![
         Line::from(Span::styled(
             track_title,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(track_artist, Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            track_artist,
+            Style::default().fg(Color::DarkGray),
+        )),
     ]);
     // ── bottom-left panel: cover art thumbnail + track title/artist ──────────
     // ART_COLS is chosen so that with 8×16 px terminal cells the displayed image
@@ -547,13 +610,19 @@ pub fn render(
             .split(player_bar[0]);
         if use_true_image_protocol {
             f.render_widget(
-                Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)),
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
                 pb0_split[0],
             );
             protocol_art_rect = Some(
                 Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                        Constraint::Length(1),
+                    ])
                     .split(pb0_split[0])[1],
             );
         } else if let Some(img) = &app.cover_art {
@@ -601,7 +670,10 @@ pub fn render(
     for (i, label) in labels.iter().enumerate() {
         let active = app.active_panel == ActivePanel::Player && app.player_button_index == i;
         let style = if active {
-            Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -624,7 +696,11 @@ pub fn render(
     // Split progress row into: current time | gauge | total time
     let progress_row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(5), Constraint::Min(0), Constraint::Length(5)])
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(0),
+            Constraint::Length(5),
+        ])
         .split(controls_and_progress[1]);
 
     let cur_min = current_ms / 60_000;
@@ -633,7 +709,9 @@ pub fn render(
     let tot_sec = (total_ms / 1_000) % 60;
 
     let time_style = if seeking_active {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -647,13 +725,13 @@ pub fn render(
 
     let gauge = Gauge::default()
         .style(Style::default().fg(Color::DarkGray))
-        .gauge_style(
-            if seeking_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(accent).add_modifier(Modifier::BOLD)
-            }
-        )
+        .gauge_style(if seeking_active {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        })
         .use_unicode(true)
         .ratio(ratio)
         .label(if seeking_active { "< seek >" } else { "" });
@@ -672,7 +750,10 @@ pub fn render(
         Line::from(Span::styled(
             format!("Vol: {}%", app.volume),
             if vol_selected {
-                Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             },
@@ -680,19 +761,22 @@ pub fn render(
         Line::from(Span::styled(
             format!("Quality: {}", quality_label(quality)),
             if qual_selected {
-                Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             },
         )),
     ])
-        .alignment(Alignment::Right)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(get_border_style(app, ActivePanel::PlayerInfo))
-                .padding(Padding::new(1, 1, 1, 0)),
-        );
+    .alignment(Alignment::Right)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(get_border_style(app, ActivePanel::PlayerInfo))
+            .padding(Padding::new(1, 1, 1, 0)),
+    );
     f.render_widget(volume_settings, player_bar[2]);
 
     protocol_art_rect

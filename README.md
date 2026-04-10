@@ -18,7 +18,7 @@
 
 ## Features
 - Browse your Playlists, Favorites
-- Explore, Home feed
+- Explore, Home feed, and Flow
 - Search for tracks, albums, artists, and playlists
 - Queue
 - Album Artwork support (kitty and ueberzugpp has full quality)

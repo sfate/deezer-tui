@@ -66,18 +66,42 @@ impl MprisPlayer {
 }
 
 impl RootInterface for MprisPlayer {
-    async fn can_quit(&self) -> fdo::Result<bool> { Ok(false) }
-    async fn quit(&self) -> fdo::Result<()> { Ok(()) }
-    async fn can_raise(&self) -> fdo::Result<bool> { Ok(false) }
-    async fn raise(&self) -> fdo::Result<()> { Ok(()) }
-    async fn has_track_list(&self) -> fdo::Result<bool> { Ok(false) }
-    async fn identity(&self) -> fdo::Result<String> { Ok("Deezer TUI".to_owned()) }
-    async fn desktop_entry(&self) -> fdo::Result<String> { Ok(String::new()) }
-    async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> { Ok(vec![]) }
-    async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> { Ok(vec![]) }
-    async fn fullscreen(&self) -> fdo::Result<bool> { Ok(false) }
-    async fn set_fullscreen(&self, _fullscreen: bool) -> zbus::Result<()> { Ok(()) }
-    async fn can_set_fullscreen(&self) -> fdo::Result<bool> { Ok(false) }
+    async fn can_quit(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+    async fn quit(&self) -> fdo::Result<()> {
+        Ok(())
+    }
+    async fn can_raise(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+    async fn raise(&self) -> fdo::Result<()> {
+        Ok(())
+    }
+    async fn has_track_list(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+    async fn identity(&self) -> fdo::Result<String> {
+        Ok("Deezer TUI".to_owned())
+    }
+    async fn desktop_entry(&self) -> fdo::Result<String> {
+        Ok(String::new())
+    }
+    async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn supported_mime_types(&self) -> fdo::Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
+    async fn set_fullscreen(&self, _fullscreen: bool) -> zbus::Result<()> {
+        Ok(())
+    }
+    async fn can_set_fullscreen(&self) -> fdo::Result<bool> {
+        Ok(false)
+    }
 }
 
 impl PlayerInterface for MprisPlayer {
@@ -110,10 +134,14 @@ impl PlayerInterface for MprisPlayer {
         Ok(())
     }
     async fn set_position(&self, _track_id: TrackId, position: Time) -> fdo::Result<()> {
-        let _ = self.event_tx.send(MprisEvent::SetPosition(position.as_micros()));
+        let _ = self
+            .event_tx
+            .send(MprisEvent::SetPosition(position.as_micros()));
         Ok(())
     }
-    async fn open_uri(&self, _uri: String) -> fdo::Result<()> { Ok(()) }
+    async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
+        Ok(())
+    }
 
     async fn playback_status(&self) -> fdo::Result<PlaybackStatus> {
         Ok(self.state.read().unwrap().playback_status)
@@ -126,8 +154,12 @@ impl PlayerInterface for MprisPlayer {
         let _ = self.event_tx.send(MprisEvent::SetLoopStatus(loop_status));
         Ok(())
     }
-    async fn rate(&self) -> fdo::Result<PlaybackRate> { Ok(PlaybackRate::from(1.0)) }
-    async fn set_rate(&self, _rate: PlaybackRate) -> zbus::Result<()> { Ok(()) }
+    async fn rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(PlaybackRate::from(1.0))
+    }
+    async fn set_rate(&self, _rate: PlaybackRate) -> zbus::Result<()> {
+        Ok(())
+    }
     async fn shuffle(&self) -> fdo::Result<bool> {
         Ok(self.state.read().unwrap().shuffle)
     }
@@ -151,18 +183,30 @@ impl PlayerInterface for MprisPlayer {
     async fn position(&self) -> fdo::Result<Time> {
         Ok(Time::from_micros(self.state.read().unwrap().position_us))
     }
-    async fn minimum_rate(&self) -> fdo::Result<PlaybackRate> { Ok(PlaybackRate::from(1.0)) }
-    async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> { Ok(PlaybackRate::from(1.0)) }
+    async fn minimum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(PlaybackRate::from(1.0))
+    }
+    async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> {
+        Ok(PlaybackRate::from(1.0))
+    }
     async fn can_go_next(&self) -> fdo::Result<bool> {
         Ok(self.state.read().unwrap().can_go_next)
     }
     async fn can_go_previous(&self) -> fdo::Result<bool> {
         Ok(self.state.read().unwrap().can_go_previous)
     }
-    async fn can_play(&self) -> fdo::Result<bool> { Ok(true) }
-    async fn can_pause(&self) -> fdo::Result<bool> { Ok(true) }
-    async fn can_seek(&self) -> fdo::Result<bool> { Ok(true) }
-    async fn can_control(&self) -> fdo::Result<bool> { Ok(true) }
+    async fn can_play(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+    async fn can_pause(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+    async fn can_seek(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
+    async fn can_control(&self) -> fdo::Result<bool> {
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +238,8 @@ pub fn build_metadata(
 // ---------------------------------------------------------------------------
 // Public factory: creates the Server and returns the crossbeam event receiver
 // ---------------------------------------------------------------------------
-pub async fn create_server() -> Option<(Server<MprisPlayer>, crossbeam_channel::Receiver<MprisEvent>)> {
+pub async fn create_server(
+) -> Option<(Server<MprisPlayer>, crossbeam_channel::Receiver<MprisEvent>)> {
     let (tx, rx) = crossbeam_channel::unbounded::<MprisEvent>();
     let player = MprisPlayer::new(tx);
     let server = Server::new("deezer-tui", player).await.ok()?;

@@ -1,6 +1,5 @@
 use std::{
-    env,
-    thread,
+    env, thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -147,7 +146,10 @@ fn build_activity(presence: &DiscordPresence) -> Activity<'static> {
             format!("{} (Paused)", presence.title)
         })
         .state(presence.artist.clone())
-        .buttons(vec![Button::new("Open in Deezer", deezer_track_url.clone())]);
+        .buttons(vec![Button::new(
+            "Open in Deezer",
+            deezer_track_url.clone(),
+        )]);
 
     if let Some(album_art_url) = presence.album_art_url.as_ref() {
         activity = activity.assets(

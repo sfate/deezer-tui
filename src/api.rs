@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use crate::config::AudioQuality;
 use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE, USER_AGENT};
 use serde_json::{json, Value};
 use std::{collections::HashSet, env, fs};
-use crate::config::AudioQuality;
 
 const GATEWAY_URL: &str = "https://www.deezer.com/ajax/gw-light.php";
 const MEDIA_URL_API: &str = "https://media.deezer.com/v1/get_url";
@@ -84,9 +84,7 @@ impl DeezerClient {
     }
 
     pub async fn fetch_api_token(&mut self) -> Result<String> {
-        let url = format!(
-            "{GATEWAY_URL}?method=deezer.getUserData&api_version=1.0&api_token="
-        );
+        let url = format!("{GATEWAY_URL}?method=deezer.getUserData&api_version=1.0&api_token=");
         let response_text = self
             .http
             .post(&url)
@@ -108,7 +106,11 @@ impl DeezerClient {
         self.session_id = response["results"]["SESSION_ID"]
             .as_str()
             .map(ToOwned::to_owned)
-            .or_else(|| response["results"]["SESSION_ID"].as_i64().map(|id| id.to_string()))
+            .or_else(|| {
+                response["results"]["SESSION_ID"]
+                    .as_i64()
+                    .map(|id| id.to_string())
+            })
             .unwrap_or_default();
 
         self.license_token = response["results"]["USER"]["OPTIONS"]["license_token"]
@@ -119,7 +121,11 @@ impl DeezerClient {
         self.user_id = response["results"]["USER"]["USER_ID"]
             .as_i64()
             .map(|id| id.to_string())
-            .or_else(|| response["results"]["USER"]["USER_ID"].as_str().map(ToOwned::to_owned));
+            .or_else(|| {
+                response["results"]["USER"]["USER_ID"]
+                    .as_str()
+                    .map(ToOwned::to_owned)
+            });
 
         self.loved_tracks_id = response["results"]["USER"]["LOVEDTRACKS_ID"]
             .as_i64()
@@ -145,15 +151,17 @@ impl DeezerClient {
             .as_deref()
             .ok_or_else(|| anyhow!("api token not loaded; call fetch_api_token first"))?;
 
-        let url = format!(
-            "{GATEWAY_URL}?method=deezer.pageTrack&api_version=1.0&api_token={api_token}"
-        );
+        let url =
+            format!("{GATEWAY_URL}?method=deezer.pageTrack&api_version=1.0&api_token={api_token}");
         let payload = json!({ "sng_id": track_id }).to_string();
 
         let text = self
             .http
             .post(&url)
-            .header(reqwest::header::COOKIE, format!("arl={}; sid={}", self.arl, self.session_id))
+            .header(
+                reqwest::header::COOKIE,
+                format!("arl={}; sid={}", self.arl, self.session_id),
+            )
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(payload)
             .send()
@@ -167,7 +175,9 @@ impl DeezerClient {
         let response = serde_json::from_str::<Value>(&text)
             .context("failed to decode Deezer pageTrack response")?;
 
-        let result = response["results"].get("DATA").unwrap_or(&response["results"]);
+        let result = response["results"]
+            .get("DATA")
+            .unwrap_or(&response["results"]);
         let track_token = match result["TRACK_TOKEN"].as_str() {
             Some(value) => value.to_owned(),
             None => return Err(anyhow!("track metadata missing TRACK_TOKEN")),
@@ -193,13 +203,14 @@ impl DeezerClient {
         let album_art_url = result["ALB_PICTURE"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .map(|hash| format!("https://e-cdns-images.dzcdn.net/images/cover/{hash}/500x500-000000-80-0-0.jpg"));
+            .map(|hash| {
+                format!(
+                    "https://e-cdns-images.dzcdn.net/images/cover/{hash}/500x500-000000-80-0-0.jpg"
+                )
+            });
 
         Ok(TrackMetadata {
-            id: result["SNG_ID"]
-                .as_str()
-                .unwrap_or(track_id)
-                .to_owned(),
+            id: result["SNG_ID"].as_str().unwrap_or(track_id).to_owned(),
             title,
             artist,
             track_token,
@@ -208,9 +219,15 @@ impl DeezerClient {
         })
     }
 
-    pub async fn fetch_media_url(&self, track_token: &str, quality: AudioQuality) -> Result<String> {
+    pub async fn fetch_media_url(
+        &self,
+        track_token: &str,
+        quality: AudioQuality,
+    ) -> Result<String> {
         if self.license_token.is_empty() {
-            return Err(anyhow!("license token not loaded; call fetch_api_token first"));
+            return Err(anyhow!(
+                "license token not loaded; call fetch_api_token first"
+            ));
         }
 
         let format = match quality {
@@ -231,7 +248,10 @@ impl DeezerClient {
         let response = self
             .http
             .post(MEDIA_URL_API)
-            .header(reqwest::header::COOKIE, format!("arl={}; sid={}", self.arl, self.session_id))
+            .header(
+                reqwest::header::COOKIE,
+                format!("arl={}; sid={}", self.arl, self.session_id),
+            )
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&payload)
             .send()
@@ -322,7 +342,11 @@ impl DeezerClient {
         })
     }
 
-    async fn authenticated_gateway_call(&self, method: &str, payload: Option<Value>) -> Result<Value> {
+    async fn authenticated_gateway_call(
+        &self,
+        method: &str,
+        payload: Option<Value>,
+    ) -> Result<Value> {
         let api_token = self
             .api_token
             .as_deref()
@@ -341,7 +365,8 @@ impl DeezerClient {
             .as_deref()
             .ok_or_else(|| anyhow!("api token not loaded; call fetch_api_token first"))?;
 
-        self.gateway_call_with_raw(method, payload, Some(api_token)).await
+        self.gateway_call_with_raw(method, payload, Some(api_token))
+            .await
     }
 
     async fn gateway_call(
@@ -454,7 +479,10 @@ impl DeezerClient {
         Ok(playlists)
     }
 
-    pub async fn fetch_playlist_tracks(&self, playlist_id: &str) -> Result<Vec<(String, String, String)>> {
+    pub async fn fetch_playlist_tracks(
+        &self,
+        playlist_id: &str,
+    ) -> Result<Vec<(String, String, String)>> {
         let api_token = self
             .api_token
             .as_deref()
@@ -546,8 +574,16 @@ impl DeezerClient {
                 total_hint = response["results"]["SONGS"]["total"]
                     .as_u64()
                     .map(|n| n as usize)
-                    .or_else(|| response["results"]["SONGS"]["count"].as_u64().map(|n| n as usize))
-                    .or_else(|| response["results"]["tracks"]["total"].as_u64().map(|n| n as usize));
+                    .or_else(|| {
+                        response["results"]["SONGS"]["count"]
+                            .as_u64()
+                            .map(|n| n as usize)
+                    })
+                    .or_else(|| {
+                        response["results"]["tracks"]["total"]
+                            .as_u64()
+                            .map(|n| n as usize)
+                    });
             }
 
             for (id, title, artist) in current_page_tracks.iter() {
@@ -624,8 +660,8 @@ impl DeezerClient {
             .await
             .context("failed to read search response body")?;
 
-        let response = serde_json::from_str::<Value>(&raw)
-            .context("failed to decode search response")?;
+        let response =
+            serde_json::from_str::<Value>(&raw).context("failed to decode search response")?;
 
         if !response["error"].is_null()
             && response["error"] != json!([])
@@ -728,7 +764,10 @@ impl DeezerClient {
                 extract_tracks_recursive(&response["results"], 120)
             }
             Err(err) => {
-                write_gateway_debug_dump("explore_error.json", &json!({"error": err.to_string()}).to_string());
+                write_gateway_debug_dump(
+                    "explore_error.json",
+                    &json!({"error": err.to_string()}).to_string(),
+                );
                 Vec::new()
             }
         };
@@ -754,6 +793,53 @@ impl DeezerClient {
 
         if tracks.is_empty() {
             tracks = self.fetch_explore_tracks_fallback().await?;
+        }
+
+        Ok(tracks)
+    }
+
+    pub async fn fetch_flow_tracks(&self, index: usize) -> Result<Vec<(String, String, String)>> {
+        let user_id = self
+            .user_id()
+            .ok_or_else(|| anyhow!("user id missing; call fetch_api_token first"))?;
+
+        let response = self
+            .http
+            .get(format!("https://api.deezer.com/user/{user_id}/flow"))
+            .query(&[("limit", "12"), ("index", &index.to_string())])
+            .send()
+            .await
+            .context("Flow request failed")?
+            .error_for_status()
+            .context("Flow request returned an error status")?
+            .json::<Value>()
+            .await
+            .context("failed to decode Flow response")?;
+
+        let tracks = response["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|track| {
+                let id = track["id"]
+                    .as_str()
+                    .map(|s| s.to_owned())
+                    .or_else(|| track["id"].as_i64().map(|n| n.to_string()))?;
+                let title = track["title"]
+                    .as_str()
+                    .or(track["title_short"].as_str())
+                    .unwrap_or("Unknown track")
+                    .to_owned();
+                let artist = track["artist"]["name"]
+                    .as_str()
+                    .unwrap_or("Unknown artist")
+                    .to_owned();
+                Some((id, title, artist))
+            })
+            .collect::<Vec<_>>();
+
+        if tracks.is_empty() {
+            return Err(anyhow!("Flow returned no tracks"));
         }
 
         Ok(tracks)
@@ -824,7 +910,6 @@ impl DeezerClient {
 
         Ok(out)
     }
-
 }
 
 fn write_gateway_debug_dump(file_name: &str, raw: &str) {
@@ -882,8 +967,18 @@ fn extract_tracks_recursive(value: &Value, limit: usize) -> Vec<(String, String,
             Value::Object(map) => {
                 let id = map
                     .get("SNG_ID")
-                    .and_then(|v| v.as_str().map(ToOwned::to_owned).or_else(|| v.as_i64().map(|n| n.to_string())))
-                    .or_else(|| map.get("id").and_then(|v| v.as_str().map(ToOwned::to_owned).or_else(|| v.as_i64().map(|n| n.to_string()))));
+                    .and_then(|v| {
+                        v.as_str()
+                            .map(ToOwned::to_owned)
+                            .or_else(|| v.as_i64().map(|n| n.to_string()))
+                    })
+                    .or_else(|| {
+                        map.get("id").and_then(|v| {
+                            v.as_str()
+                                .map(ToOwned::to_owned)
+                                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                        })
+                    });
 
                 let title = map
                     .get("SNG_TITLE")
@@ -893,8 +988,18 @@ fn extract_tracks_recursive(value: &Value, limit: usize) -> Vec<(String, String,
                 let artist = map
                     .get("ART_NAME")
                     .and_then(Value::as_str)
-                    .or_else(|| map.get("artist").and_then(|a| a.get("name")).and_then(Value::as_str))
-                    .or_else(|| map.get("ARTISTS").and_then(Value::as_array).and_then(|arr| arr.first()).and_then(|a| a.get("ART_NAME")).and_then(Value::as_str));
+                    .or_else(|| {
+                        map.get("artist")
+                            .and_then(|a| a.get("name"))
+                            .and_then(Value::as_str)
+                    })
+                    .or_else(|| {
+                        map.get("ARTISTS")
+                            .and_then(Value::as_array)
+                            .and_then(|arr| arr.first())
+                            .and_then(|a| a.get("ART_NAME"))
+                            .and_then(Value::as_str)
+                    });
 
                 if let (Some(id), Some(title), Some(artist)) = (id, title, artist) {
                     if seen.insert(id.clone()) {

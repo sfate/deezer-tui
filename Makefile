@@ -19,6 +19,6 @@ lint:
 	cargo clippy --locked $(CLIPPY_FLAGS)
 
 build:
-	cargo build --locked
+	cargo build --locked --release
 
 ci: check test lint

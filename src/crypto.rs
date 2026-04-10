@@ -91,8 +91,8 @@ fn md5_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        decrypt_audio_stream_with_key, derive_blowfish_key, Blowfish, BlowfishCbcEnc, CHUNK_SIZE,
-        DEEZER_BLOWFISH_IV, NoPadding,
+        decrypt_audio_stream_with_key, derive_blowfish_key, Blowfish, BlowfishCbcEnc, NoPadding,
+        CHUNK_SIZE, DEEZER_BLOWFISH_IV,
     };
     use blowfish::cipher::{BlockEncryptMut, KeyIvInit};
 
