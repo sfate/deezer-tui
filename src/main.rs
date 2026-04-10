@@ -1499,6 +1499,7 @@ async fn run_tui_loop(
                             }
                         } else if app.should_load_more_flow() {
                             app.flow_loading_more = true;
+                            app.is_playing = false;
                             app.command_sender
                                 .send(Command::LoadFlowPage {
                                     index: app.flow_next_index,
@@ -1584,25 +1585,30 @@ async fn run_tui_loop(
                     }
                 }
                 UiEvent::Error(message) => {
-                    app.flow_loading_more = false;
+                    let message_lower = message.to_lowercase();
                     let is_status_message = message.starts_with("Status:")
-                        || message.contains("Loading")
-                        || message.contains("Auth")
-                        || message.contains("ARL")
-                        || message.contains("Client error")
-                        || message.contains("API Error")
-                        || message.contains("Search")
-                        || message.contains("Flow error");
+                        || message_lower.contains("loading")
+                        || message_lower.contains("auth")
+                        || message_lower.contains("arl")
+                        || message_lower.contains("client error")
+                        || message_lower.contains("api error")
+                        || message_lower.contains("search")
+                        || message_lower.contains("flow error");
 
                     if is_status_message {
+                        if message_lower.contains("flow error") {
+                            app.flow_loading_more = false;
+                        }
                         app.status_message = message;
                         // Keep playback/RPC state intact for informational status updates.
                         continue;
                     }
 
-                    let noisy_terminal_output = message.to_lowercase().contains("underrun")
-                        || message.to_lowercase().contains("error.pcm")
-                        || message.to_lowercase().contains("alsa");
+                    app.flow_loading_more = false;
+
+                    let noisy_terminal_output = message_lower.contains("underrun")
+                        || message_lower.contains("error.pcm")
+                        || message_lower.contains("alsa");
                     if noisy_terminal_output {
                         // If audio stack printed junk over the TUI, hard redraw once.
                         force_full_redraw = true;

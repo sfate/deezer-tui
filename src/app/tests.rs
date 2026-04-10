@@ -172,7 +172,7 @@ fn append_flow_tracks_without_autoplay_still_reports_appended_tracks() {
 }
 
 #[test]
-fn should_load_more_flow_only_on_last_queued_flow_track() {
+fn should_load_more_flow_only_on_last_queued_flow_track_even_if_playlist_id_changes() {
     let mut app = test_app();
     app.load_flow_tracks(vec![track("1", "One", "A"), track("2", "Two", "B")], true);
 

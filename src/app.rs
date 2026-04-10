@@ -11,7 +11,6 @@ pub struct FlowAppendResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Command {
     PlayTrack(String),
     AutoPlayTrack(String),
@@ -22,7 +21,9 @@ pub enum Command {
     },
     Pause,
     Resume,
+    #[allow(dead_code)]
     Next,
+    #[allow(dead_code)]
     Previous,
     SetVolume(u16),
     SetQuality(AudioQuality),
@@ -30,6 +31,7 @@ pub enum Command {
         enabled: bool,
         duration_ms: u64,
     },
+    #[allow(dead_code)]
     ToggleCrossfade,
     LoadPlaylist(String),
     LoadHome,
