@@ -5,6 +5,12 @@ use tokio::sync::mpsc;
 use crate::config::{AudioQuality, Config};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowAppendResult {
+    pub appended_count: usize,
+    pub autoplay_track_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Command {
     PlayTrack(String),
@@ -471,7 +477,7 @@ impl App {
         &mut self,
         tracks: Vec<(String, String, String)>,
         autoplay: bool,
-    ) -> Option<String> {
+    ) -> FlowAppendResult {
         let existing_ids: HashSet<&str> = self
             .queue_tracks
             .iter()
@@ -485,9 +491,13 @@ impl App {
         if appended_tracks.is_empty() {
             self.queue_index = None;
             self.is_playing = false;
-            return None;
+            return FlowAppendResult {
+                appended_count: 0,
+                autoplay_track_id: None,
+            };
         }
 
+        let appended_count = appended_tracks.len();
         let start_idx = self.queue_tracks.len();
         self.current_tracks.extend(appended_tracks.iter().cloned());
         self.queue_tracks.extend(appended_tracks.iter().cloned());
@@ -501,13 +511,19 @@ impl App {
             self.queue_index = Some(start_idx);
             self.queue_state.select(Some(start_idx));
             self.is_playing = true;
-            return self
-                .queue_tracks
-                .get(start_idx)
-                .map(|(track_id, _, _)| track_id.clone());
+            return FlowAppendResult {
+                appended_count,
+                autoplay_track_id: self
+                    .queue_tracks
+                    .get(start_idx)
+                    .map(|(track_id, _, _)| track_id.clone()),
+            };
         }
 
-        None
+        FlowAppendResult {
+            appended_count,
+            autoplay_track_id: None,
+        }
     }
 
     pub fn should_load_more_flow(&self) -> bool {

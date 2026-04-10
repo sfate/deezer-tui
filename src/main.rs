@@ -541,7 +541,6 @@ async fn run_tui_loop(
                                         autoplay: true,
                                     })
                                     .map_err(|_| anyhow!("MPRIS: failed to load more Flow"))?;
-                                app.is_playing = false;
                                 app.status_message = "Loading more Flow...".into();
                             }
                         }
@@ -1294,7 +1293,6 @@ async fn run_tui_loop(
                                                     .map_err(|_| {
                                                         anyhow!("failed to load more Flow")
                                                     })?;
-                                                app.is_playing = false;
                                                 app.status_message = "Loading more Flow...".into();
                                             }
                                         }
@@ -1377,7 +1375,8 @@ async fn run_tui_loop(
                         let can_go_next = app
                             .queue_index
                             .map(|i| i + 1 < app.queue_tracks.len())
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            || app.should_load_more_flow();
                         let can_go_previous = app.queue_index.unwrap_or(0) > 0;
                         let meta = mpris::build_metadata(
                             &id,
@@ -1433,7 +1432,8 @@ async fn run_tui_loop(
                             let can_go_next = app
                                 .queue_index
                                 .map(|i| i + 1 < app.queue_tracks.len())
-                                .unwrap_or(false);
+                                .unwrap_or(false)
+                                || app.should_load_more_flow();
                             let can_go_previous = app.queue_index.unwrap_or(0) > 0;
                             mpris::set_track_metadata(
                                 &mpris_handle.server,
@@ -1689,14 +1689,14 @@ async fn run_tui_loop(
                     app.flow_next_index = next_index;
 
                     if append {
-                        let queue_len_before = app.queue_tracks.len();
-                        if let Some(track_id) = app.append_flow_tracks(tracks, autoplay) {
+                        let result = app.append_flow_tracks(tracks, autoplay);
+                        if let Some(track_id) = result.autoplay_track_id {
                             app.command_sender
                                 .send(Command::AutoPlayTrack(track_id))
                                 .map_err(|_| anyhow!("failed to continue Flow playback"))?;
                             app.status_message =
                                 format!("Flow extended to {} tracks", app.queue_tracks.len());
-                        } else {
+                        } else if result.appended_count == 0 {
                             app.queue_index = None;
                             app.status_message = "Flow returned no new tracks".into();
                             if let Some(mpris_handle) = mpris.as_mut() {
@@ -1709,8 +1709,7 @@ async fn run_tui_loop(
                             }
                             discord_rpc.clear();
                             continue;
-                        }
-                        if !autoplay && app.queue_tracks.len() > queue_len_before {
+                        } else {
                             app.status_message =
                                 format!("Flow extended to {} tracks", app.queue_tracks.len());
                         }
