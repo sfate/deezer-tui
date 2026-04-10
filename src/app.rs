@@ -489,8 +489,6 @@ impl App {
             .collect();
 
         if appended_tracks.is_empty() {
-            self.queue_index = None;
-            self.is_playing = false;
             return FlowAppendResult {
                 appended_count: 0,
                 autoplay_track_id: None,

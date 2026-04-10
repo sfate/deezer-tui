@@ -1502,8 +1502,17 @@ async fn run_tui_loop(
                                     autoplay: true,
                                 })
                                 .map_err(|_| anyhow!("failed to load next Flow batch"))?;
-                            app.is_playing = false;
                             app.status_message = "Loading more Flow...".into();
+                            if let Some(mpris_handle) = mpris.as_mut() {
+                                let pos_ms =
+                                    app.now_playing.as_ref().map(|n| n.current_ms).unwrap_or(0);
+                                mpris::set_playback_status(
+                                    &mpris_handle.server,
+                                    PlaybackStatus::Paused,
+                                    pos_ms,
+                                )
+                                .await;
+                            }
                         } else if !app.queue_tracks.is_empty() {
                             match app.repeat_mode {
                                 RepeatMode::One => {
@@ -1571,7 +1580,6 @@ async fn run_tui_loop(
                     }
                 }
                 UiEvent::Error(message) => {
-                    let was_loading_more_flow = app.flow_loading_more;
                     app.flow_loading_more = false;
                     let is_status_message = message.starts_with("Status:")
                         || message.contains("Loading")
@@ -1580,7 +1588,7 @@ async fn run_tui_loop(
                         || message.contains("Client error")
                         || message.contains("API Error")
                         || message.contains("Search")
-                        || (was_loading_more_flow && message.contains("Flow error"));
+                        || message.contains("Flow error");
 
                     if is_status_message {
                         app.status_message = message;
