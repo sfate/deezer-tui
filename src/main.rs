@@ -1479,6 +1479,11 @@ async fn run_tui_loop(
                 }
                 UiEvent::PlaybackStopped => {
                     if let Some(current_idx) = app.queue_index {
+                        if app.flow_loading_more {
+                            app.status_message = "Loading more Flow...".into();
+                            continue;
+                        }
+
                         let next_idx = current_idx + 1;
                         if next_idx < app.queue_tracks.len() {
                             app.queue_index = Some(next_idx);
@@ -1716,6 +1721,7 @@ async fn run_tui_loop(
                                 format!("Flow extended to {} tracks", app.queue_tracks.len());
                         } else if result.appended_count == 0 {
                             app.queue_index = None;
+                            app.is_playing = false;
                             app.status_message = "Flow returned no new tracks".into();
                             if let Some(mpris_handle) = mpris.as_mut() {
                                 mpris::set_playback_status(
