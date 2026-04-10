@@ -1088,6 +1088,7 @@ async fn run_tui_loop(
                                             match app.search_category {
                                                 SearchCategory::Tracks => {
                                                     if idx == 0 {
+                                                        app.is_flow_queue = false;
                                                         app.queue_tracks =
                                                             app.current_tracks.clone();
                                                         app.queue = app
@@ -1111,6 +1112,7 @@ async fn run_tui_loop(
                                                     } else {
                                                         let track_idx = idx - 1;
                                                         if track_idx < app.current_tracks.len() {
+                                                            app.is_flow_queue = false;
                                                             let selected = app.current_tracks
                                                                 [track_idx]
                                                                 .clone();
@@ -1160,6 +1162,7 @@ async fn run_tui_loop(
                                     } else if !app.current_tracks.is_empty() {
                                         if let Some(idx) = app.main_state.selected() {
                                             if idx == 0 {
+                                                app.is_flow_queue = false;
                                                 app.queue_tracks = app.current_tracks.clone();
                                                 app.queue = app
                                                     .queue_tracks
@@ -1186,6 +1189,7 @@ async fn run_tui_loop(
                                             } else {
                                                 let track_idx = idx - 1;
                                                 if track_idx < app.current_tracks.len() {
+                                                    app.is_flow_queue = false;
                                                     let selected =
                                                         app.current_tracks[track_idx].clone();
                                                     app.queue_tracks = vec![selected.clone()];

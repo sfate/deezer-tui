@@ -168,6 +168,7 @@ fn append_flow_tracks_without_autoplay_still_reports_appended_tracks() {
     assert_eq!(app.current_tracks.len(), 3);
     assert_eq!(app.queue_index, Some(0));
     assert!(app.is_playing);
+    assert!(app.is_flow_queue);
 }
 
 #[test]
@@ -185,5 +186,16 @@ fn should_load_more_flow_only_on_last_queued_flow_track() {
 
     app.flow_loading_more = false;
     app.current_playlist_id = Some("__home__".to_string());
+    assert!(app.should_load_more_flow());
+}
+
+#[test]
+fn should_not_load_more_flow_when_playlist_id_is_stale_but_queue_is_not_flow() {
+    let mut app = test_app();
+    app.current_playlist_id = Some("__flow__".to_string());
+    app.queue_tracks = vec![track("1", "One", "A")];
+    app.queue_index = Some(0);
+    app.is_flow_queue = false;
+
     assert!(!app.should_load_more_flow());
 }

@@ -161,6 +161,7 @@ pub struct App {
     pub auto_transition_armed: bool,
     pub flow_next_index: usize,
     pub flow_loading_more: bool,
+    pub is_flow_queue: bool,
     /// Decoded cover-art image for the current track (None until downloaded).
     pub cover_art: Option<image::DynamicImage>,
     pub cover_art_png: Option<Vec<u8>>,
@@ -220,6 +221,7 @@ impl App {
             auto_transition_armed: false,
             flow_next_index: 0,
             flow_loading_more: false,
+            is_flow_queue: false,
             cover_art: None,
             cover_art_png: None,
             cover_art_track_id: None,
@@ -464,6 +466,7 @@ impl App {
             self.queue_index = Some(0);
             self.queue_state.select(Some(0));
             self.is_playing = true;
+            self.is_flow_queue = true;
             return self
                 .queue_tracks
                 .first()
@@ -509,6 +512,7 @@ impl App {
             self.queue_index = Some(start_idx);
             self.queue_state.select(Some(start_idx));
             self.is_playing = true;
+            self.is_flow_queue = true;
             return FlowAppendResult {
                 appended_count,
                 autoplay_track_id: self
@@ -525,7 +529,7 @@ impl App {
     }
 
     pub fn should_load_more_flow(&self) -> bool {
-        self.current_playlist_id.as_deref() == Some("__flow__")
+        self.is_flow_queue
             && !self.flow_loading_more
             && self
                 .queue_index
