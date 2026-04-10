@@ -1599,9 +1599,14 @@ async fn run_tui_loop(
                         || message_lower.contains("api error")
                         || message_lower.contains("search")
                         || message_lower.contains("flow error");
+                    let is_flow_request_failure = message_lower.contains("flow error")
+                        || message_lower.contains("auth")
+                        || message_lower.contains("arl")
+                        || message_lower.contains("client error")
+                        || message_lower.contains("api error");
 
                     if is_status_message {
-                        if message_lower.contains("flow error") {
+                        if app.flow_loading_more && is_flow_request_failure {
                             app.flow_loading_more = false;
                         }
                         app.status_message = message;
