@@ -156,6 +156,29 @@ fn append_flow_tracks_skips_duplicates_and_autoplays_first_new_track() {
 }
 
 #[test]
+fn append_flow_tracks_skips_duplicates_within_the_same_batch() {
+    let mut app = test_app();
+    app.load_flow_tracks(vec![track("1", "One", "A")], true);
+
+    let result = app.append_flow_tracks(
+        vec![
+            track("2", "Two", "B"),
+            track("2", "Two", "B"),
+            track("3", "Three", "C"),
+        ],
+        true,
+    );
+
+    assert_eq!(result.appended_count, 2);
+    assert_eq!(result.autoplay_track_id.as_deref(), Some("2"));
+    assert_eq!(app.queue_tracks.len(), 3);
+    assert_eq!(
+        app.queue_tracks.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>(),
+        vec!["1", "2", "3"]
+    );
+}
+
+#[test]
 fn append_flow_tracks_without_autoplay_still_reports_appended_tracks() {
     let mut app = test_app();
     app.load_flow_tracks(vec![track("1", "One", "A"), track("2", "Two", "B")], true);

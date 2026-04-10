@@ -483,14 +483,14 @@ impl App {
         tracks: Vec<(String, String, String)>,
         autoplay: bool,
     ) -> FlowAppendResult {
-        let existing_ids: HashSet<&str> = self
+        let mut seen_ids: HashSet<String> = self
             .queue_tracks
             .iter()
-            .map(|(id, _, _)| id.as_str())
+            .map(|(id, _, _)| id.clone())
             .collect();
         let appended_tracks: Vec<(String, String, String)> = tracks
             .into_iter()
-            .filter(|(id, _, _)| !existing_ids.contains(id.as_str()))
+            .filter(|(id, _, _)| seen_ids.insert(id.clone()))
             .collect();
 
         if appended_tracks.is_empty() {
