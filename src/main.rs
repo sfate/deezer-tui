@@ -1571,6 +1571,7 @@ async fn run_tui_loop(
                     }
                 }
                 UiEvent::Error(message) => {
+                    let was_loading_more_flow = app.flow_loading_more;
                     app.flow_loading_more = false;
                     let is_status_message = message.starts_with("Status:")
                         || message.contains("Loading")
@@ -1578,7 +1579,8 @@ async fn run_tui_loop(
                         || message.contains("ARL")
                         || message.contains("Client error")
                         || message.contains("API Error")
-                        || message.contains("Search");
+                        || message.contains("Search")
+                        || (was_loading_more_flow && message.contains("Flow error"));
 
                     if is_status_message {
                         app.status_message = message;
