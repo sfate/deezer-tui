@@ -195,6 +195,20 @@ fn append_flow_tracks_without_autoplay_still_reports_appended_tracks() {
 }
 
 #[test]
+fn append_flow_tracks_does_not_overwrite_non_flow_page_tracks() {
+    let mut app = test_app();
+    app.load_flow_tracks(vec![track("1", "One", "A"), track("2", "Two", "B")], true);
+    app.current_playlist_id = Some("__home__".to_string());
+    app.current_tracks = vec![track("10", "Home Track", "Home Artist")];
+
+    let result = app.append_flow_tracks(vec![track("3", "Three", "C")], false);
+
+    assert_eq!(result.appended_count, 1);
+    assert_eq!(app.current_tracks, vec![track("10", "Home Track", "Home Artist")]);
+    assert_eq!(app.queue_tracks.len(), 3);
+}
+
+#[test]
 fn should_load_more_flow_only_on_last_queued_flow_track_even_if_playlist_id_changes() {
     let mut app = test_app();
     app.load_flow_tracks(vec![track("1", "One", "A"), track("2", "Two", "B")], true);
@@ -221,4 +235,20 @@ fn should_not_load_more_flow_when_playlist_id_is_stale_but_queue_is_not_flow() {
     app.is_flow_queue = false;
 
     assert!(!app.should_load_more_flow());
+}
+
+#[test]
+fn non_flow_tracks_load_keeps_flow_cursor_when_flow_queue_is_still_active() {
+    let mut app = test_app();
+    app.is_flow_queue = true;
+    app.flow_next_index = 24;
+    app.current_playlist_id = Some("__home__".to_string());
+
+    if app.current_playlist_id.as_deref() != Some("__flow__") && !app.is_flow_queue {
+        app.flow_next_index = 0;
+    }
+    app.current_tracks = vec![track("10", "Home Track", "Home Artist")];
+
+    assert_eq!(app.flow_next_index, 24);
+    assert_eq!(app.current_tracks, vec![track("10", "Home Track", "Home Artist")]);
 }

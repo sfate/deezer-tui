@@ -1691,7 +1691,8 @@ async fn run_tui_loop(
                 }
                 UiEvent::TracksLoaded(tracks) => {
                     app.flow_loading_more = false;
-                    if app.current_playlist_id.as_deref() != Some("__flow__") {
+                    if app.current_playlist_id.as_deref() != Some("__flow__") && !app.is_flow_queue
+                    {
                         app.flow_next_index = 0;
                     }
                     app.current_tracks = tracks;

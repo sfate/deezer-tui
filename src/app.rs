@@ -502,7 +502,9 @@ impl App {
 
         let appended_count = appended_tracks.len();
         let start_idx = self.queue_tracks.len();
-        self.current_tracks.extend(appended_tracks.iter().cloned());
+        if self.current_playlist_id.as_deref() == Some("__flow__") {
+            self.current_tracks.extend(appended_tracks.iter().cloned());
+        }
         self.queue_tracks.extend(appended_tracks.iter().cloned());
         self.queue.extend(
             appended_tracks
