@@ -2,12 +2,15 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"deezer-tui-go/internal/app"
 	"deezer-tui-go/internal/config"
+	"deezer-tui-go/internal/deezer"
+	"deezer-tui-go/internal/player"
 )
 
 type fakeLoader struct {
@@ -42,6 +45,31 @@ func (f *fakeLoader) LoadFavorites(context.Context) ([]app.Track, error) {
 func (f *fakeLoader) LoadPlaylist(context.Context, string) ([]app.Track, error) {
 	return append([]app.Track(nil), f.playlist...), nil
 }
+
+type fakePlaybackRuntime struct {
+	started []string
+	session *fakePlaybackSession
+}
+
+func (f *fakePlaybackRuntime) Start(trackID string, _ deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
+	f.started = append(f.started, trackID)
+	f.session = &fakePlaybackSession{}
+	return f.session, nil
+}
+
+type fakePlaybackSession struct {
+	paused  bool
+	resumed bool
+	stopped bool
+	waitErr error
+	volume  float32
+}
+
+func (f *fakePlaybackSession) Pause()              { f.paused = true }
+func (f *fakePlaybackSession) Resume()             { f.resumed = true }
+func (f *fakePlaybackSession) Stop()               { f.stopped = true }
+func (f *fakePlaybackSession) Wait() error         { return f.waitErr }
+func (f *fakePlaybackSession) SetVolume(v float32) { f.volume = v }
 
 func TestViewUsesAltScreen(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
@@ -98,7 +126,8 @@ func TestEnterOnFlowLoadsQueueAndMarksFlow(t *testing.T) {
 			{ID: "202", Title: "Night Transit", Artist: "Aster Lane"},
 		},
 	}
-	model := NewWithLoader(config.Default(), loader)
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), loader, runtime)
 	model.width = 120
 	model.height = 40
 	model.app.NavState.Select(intPtr(1))
@@ -110,7 +139,13 @@ func TestEnterOnFlowLoadsQueueAndMarksFlow(t *testing.T) {
 		t.Fatal("expected flow load command")
 	}
 
-	nextModel, _ = updated.Update(cmd())
+	nextModel, playbackCmd := updated.Update(cmd())
+	updated = nextModel.(Model)
+	if playbackCmd == nil {
+		t.Fatal("expected playback start command")
+	}
+
+	nextModel, _ = updated.Update(playbackCmd())
 	updated = nextModel.(Model)
 
 	if updated.app.CurrentPlaylistID == nil || *updated.app.CurrentPlaylistID != "__flow__" {
@@ -127,5 +162,73 @@ func TestEnterOnFlowLoadsQueueAndMarksFlow(t *testing.T) {
 	}
 	if len(updated.app.QueueTracks) != len(loader.flow) {
 		t.Fatalf("unexpected queue length %d", len(updated.app.QueueTracks))
+	}
+	if len(runtime.started) != 1 || runtime.started[0] != "201" {
+		t.Fatalf("unexpected playback start %#v", runtime.started)
+	}
+}
+
+func TestTogglePlayPauseControlsSession(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	session := &fakePlaybackSession{}
+	model.session = session
+	model.app.IsPlaying = true
+
+	model.togglePlayPause()
+	if !session.paused || model.app.IsPlaying {
+		t.Fatal("expected pause to be forwarded")
+	}
+
+	model.togglePlayPause()
+	if !session.resumed || !model.app.IsPlaying {
+		t.Fatal("expected resume to be forwarded")
+	}
+}
+
+func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.currentPlayID = 1
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: nil})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected next track command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatal("expected queue index to advance")
+	}
+}
+
+func TestPlaybackErrorStopsPlayback(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+
+	nextModel, _ := model.Update(playbackFinishedMsg{playID: 1, err: errors.New("boom")})
+	updated := nextModel.(Model)
+	if updated.app.IsPlaying {
+		t.Fatal("expected playback error to stop playback")
+	}
+}
+
+func TestCanceledPlaybackCompletionIsIgnored(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: context.Canceled})
+	updated := nextModel.(Model)
+	if cmd != nil {
+		t.Fatal("did not expect follow-up command")
+	}
+	if !updated.app.IsPlaying {
+		t.Fatal("expected canceled completion to leave playback state unchanged")
 	}
 }

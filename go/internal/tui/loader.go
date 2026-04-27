@@ -7,6 +7,7 @@ import (
 	"deezer-tui-go/internal/app"
 	"deezer-tui-go/internal/config"
 	"deezer-tui-go/internal/deezer"
+	"deezer-tui-go/internal/player"
 )
 
 type BootstrapData struct {
@@ -68,6 +69,10 @@ func (l *DeezerLoader) LoadFavorites(ctx context.Context) ([]app.Track, error) {
 func (l *DeezerLoader) LoadPlaylist(ctx context.Context, playlistID string) ([]app.Track, error) {
 	tracks, err := l.client.FetchPlaylistTracks(ctx, playlistID)
 	return mapTracks(tracks), err
+}
+
+func (l *DeezerLoader) MediaClient() player.MediaClient {
+	return l.client
 }
 
 func mapTracks(in []deezer.Track) []app.Track {

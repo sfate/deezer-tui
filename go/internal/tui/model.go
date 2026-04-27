@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,8 @@ import (
 
 	"deezer-tui-go/internal/app"
 	"deezer-tui-go/internal/config"
+	"deezer-tui-go/internal/deezer"
+	"deezer-tui-go/internal/player"
 )
 
 type bootstrapLoadedMsg struct {
@@ -28,11 +31,25 @@ type loadFailedMsg struct {
 	message string
 }
 
+type playbackStartedMsg struct {
+	playID  int
+	session PlaybackSession
+}
+
+type playbackFinishedMsg struct {
+	playID int
+	err    error
+}
+
 type Model struct {
-	app    *app.App
-	loader Loader
-	width  int
-	height int
+	app            *app.App
+	loader         Loader
+	runtime        PlayerRuntime
+	session        PlaybackSession
+	width          int
+	height         int
+	nextPlaybackID int
+	currentPlayID  int
 }
 
 func New() Model {
@@ -56,8 +73,9 @@ func NewWithConfig(cfg config.Config) Model {
 
 	state.StatusMessage = status
 	return Model{
-		app:    state,
-		loader: loader,
+		app:     state,
+		loader:  loader,
+		runtime: newPlayerRuntime(loader),
 	}
 }
 
@@ -68,9 +86,16 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		state.StatusMessage = "No Deezer loader configured"
 	}
 	return Model{
-		app:    state,
-		loader: loader,
+		app:     state,
+		loader:  loader,
+		runtime: newPlayerRuntime(loader),
 	}
+}
+
+func NewWithLoaderAndRuntime(cfg config.Config, loader Loader, runtime PlayerRuntime) Model {
+	model := NewWithLoader(cfg, loader)
+	model.runtime = runtime
+	return model
 }
 
 func (m Model) Init() tea.Cmd {
@@ -97,6 +122,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.app.FlowNextIndex += len(msg.tracks)
 			m.app.StatusMessage = fmt.Sprintf("Appended %d Flow tracks", result.AppendedCount)
+			if result.AutoplayTrackID != nil {
+				return m, m.startTrackPlayback(*result.AutoplayTrackID)
+			}
 			return m, nil
 		}
 
@@ -104,8 +132,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.isFlow {
 			m.app.FlowNextIndex = len(msg.tracks)
 			m.app.IsFlowQueue = true
-			m.app.LoadFlowTracks(msg.tracks, msg.autoplay)
+			trackID := m.app.LoadFlowTracks(msg.tracks, msg.autoplay)
 			m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", msg.title, len(msg.tracks))
+			if trackID != nil {
+				return m, m.startTrackPlayback(*trackID)
+			}
 			return m, nil
 		}
 
@@ -115,12 +146,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.StatusMessage = msg.message
 		m.app.FlowLoadingMore = false
 		return m, nil
+	case playbackStartedMsg:
+		if msg.playID != m.nextPlaybackID {
+			msg.session.Stop()
+			return m, nil
+		}
+		m.session = msg.session
+		m.currentPlayID = msg.playID
+		m.session.SetVolume(float32(m.app.Volume) / 100)
+		m.app.IsPlaying = true
+		m.app.StatusMessage = "Playing"
+		return m, waitPlaybackCmd(msg.playID, msg.session)
+	case playbackFinishedMsg:
+		if msg.playID != m.currentPlayID {
+			return m, nil
+		}
+		m.session = nil
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
+			m.app.IsPlaying = false
+			m.app.StatusMessage = fmt.Sprintf("Playback error: %v", msg.err)
+			return m, nil
+		}
+		if errors.Is(msg.err, context.Canceled) {
+			return m, nil
+		}
+		return m, m.handlePlaybackFinished()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.session != nil {
+				m.session.Stop()
+			}
 			return m, tea.Quit
 		case "tab":
 			m.cyclePanelForward()
@@ -216,8 +275,17 @@ func (m *Model) cyclePanelBackward() {
 
 func (m *Model) togglePlayPause() {
 	if m.app.IsPlaying {
+		if m.session != nil {
+			m.session.Pause()
+		}
 		m.app.IsPlaying = false
-		m.app.StatusMessage = "Paused (audio backend not wired yet)"
+		m.app.StatusMessage = "Paused"
+		return
+	}
+	if m.session != nil {
+		m.session.Resume()
+		m.app.IsPlaying = true
+		m.app.StatusMessage = "Playing"
 		return
 	}
 	if len(m.app.QueueTracks) == 0 && len(m.app.CurrentTracks) > 0 {
@@ -226,9 +294,9 @@ func (m *Model) togglePlayPause() {
 		m.app.QueueIndex = intPtr(0)
 		m.app.QueueState.Select(intPtr(0))
 	}
-	if len(m.app.QueueTracks) > 0 {
+	if len(m.app.QueueTracks) > 0 && m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		m.app.IsPlaying = true
-		m.app.StatusMessage = "Playing (audio backend not wired yet)"
+		m.app.StatusMessage = "Starting playback..."
 	}
 }
 
@@ -275,8 +343,9 @@ func (m *Model) handleEnter() tea.Cmd {
 			m.app.QueueIndex = intPtr(0)
 			m.app.QueueState.Select(intPtr(0))
 			m.app.IsPlaying = true
+			m.app.IsFlowQueue = m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__flow__"
 			m.app.StatusMessage = fmt.Sprintf("Queued %d tracks", len(m.app.QueueTracks))
-			return nil
+			return m.startTrackPlayback(m.app.QueueTracks[0].ID)
 		}
 		trackIndex := selected - 1
 		if trackIndex >= 0 && trackIndex < len(m.app.CurrentTracks) {
@@ -288,6 +357,7 @@ func (m *Model) handleEnter() tea.Cmd {
 			m.app.IsPlaying = true
 			m.app.IsFlowQueue = false
 			m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
+			return m.startTrackPlayback(track.ID)
 		}
 	}
 	return nil
@@ -306,6 +376,51 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.FlowLoadingMore = false
 	m.app.FlowNextIndex = 0
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
+}
+
+func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
+	if strings.TrimSpace(trackID) == "" {
+		return nil
+	}
+	if m.runtime == nil {
+		m.app.StatusMessage = "Playback runtime is not configured"
+		return nil
+	}
+	if m.session != nil {
+		m.session.Stop()
+		m.session = nil
+	}
+	m.nextPlaybackID++
+	playID := m.nextPlaybackID
+	m.app.IsPlaying = true
+	m.app.StatusMessage = "Starting playback..."
+	return startPlaybackCmd(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality))
+}
+
+func (m *Model) handlePlaybackFinished() tea.Cmd {
+	if m.app.QueueIndex == nil {
+		m.app.IsPlaying = false
+		m.app.StatusMessage = "Playback finished"
+		return nil
+	}
+
+	current := *m.app.QueueIndex
+	if current+1 < len(m.app.QueueTracks) {
+		nextIndex := current + 1
+		m.app.QueueIndex = intPtr(nextIndex)
+		m.app.QueueState.Select(intPtr(nextIndex))
+		return m.startTrackPlayback(m.app.QueueTracks[nextIndex].ID)
+	}
+
+	if m.app.ShouldLoadMoreFlow() {
+		m.app.FlowLoadingMore = true
+		m.app.StatusMessage = "Loading more Flow..."
+		return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, true)
+	}
+
+	m.app.IsPlaying = false
+	m.app.StatusMessage = "Playback finished"
+	return nil
 }
 
 func (m Model) renderNavigation() string {
@@ -434,6 +549,28 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
+func startPlaybackCmd(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality) tea.Cmd {
+	if runtime == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		session, err := runtime.Start(trackID, quality, player.EventHandler{})
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Playback start error: %v", err)}
+		}
+		return playbackStartedMsg{playID: playID, session: session}
+	}
+}
+
+func waitPlaybackCmd(playID int, session PlaybackSession) tea.Cmd {
+	if session == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return playbackFinishedMsg{playID: playID, err: session.Wait()}
+	}
+}
+
 func loadHomeCmd(loader Loader) tea.Cmd {
 	if loader == nil {
 		return nil
@@ -507,6 +644,17 @@ func repeatModeLabel(mode app.RepeatMode) string {
 		return "One"
 	default:
 		return "Off"
+	}
+}
+
+func qualityFromConfig(q config.AudioQuality) deezer.AudioQuality {
+	switch q {
+	case config.AudioQuality128:
+		return deezer.AudioQuality128
+	case config.AudioQualityFlac:
+		return deezer.AudioQualityFlac
+	default:
+		return deezer.AudioQuality320
 	}
 }
 
