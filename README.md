@@ -27,6 +27,53 @@
 - Cross Fade support (configurable in settings)
 - [ARL login](https://www.dumpmedia.com/deezplus/deezer-arl.html#part2)
 
+## Go Rewrite
+
+The active rewrite is under [go/](./go) and uses Bubble Tea for the TUI.
+
+Current status:
+- the Go app builds and runs
+- the Bubble Tea shell is in place
+- Deezer client, Flow logic, and playback pipeline scaffolding are ported
+- feature parity with the Rust app is not complete yet
+
+## Build From Source
+
+Requirements:
+- Go `1.25.9` or newer for local development
+
+Build the Go binary from the repository root:
+
+```bash
+make build
+```
+
+This produces:
+
+```bash
+./target/release/deezer-tui
+```
+
+Run it with:
+
+```bash
+./target/release/deezer-tui
+```
+
+For a direct dev run without creating the release binary:
+
+```bash
+go -C go run ./cmd/deezer-tui
+```
+
+Useful development commands:
+
+```bash
+make lint
+make audit
+make test
+```
+
 ## Installation
 
 <details>

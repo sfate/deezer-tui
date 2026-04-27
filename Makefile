@@ -1,24 +1,22 @@
-.PHONY: check test lint build ci
+.PHONY: lint audit test build ci
 
-CLIPPY_FLAGS = --all-targets --all-features -- -D warnings \
-	-A dead_code \
-	-A clippy::manual_is_multiple_of \
-	-A clippy::collapsible_if \
-	-A clippy::useless_conversion \
-	-A clippy::useless_format \
-	-A clippy::collapsible_match \
-	-A clippy::useless_vec
-
-check:
-	cargo check --locked
-
-test:
-	cargo test --locked
+GO_DIR ?= go
+BINARY_NAME ?= deezer-tui
+BUILD_OUTPUT ?= target/release/$(BINARY_NAME)
+TEST_DIR ?= ./...
+TEST_CASE ?= ^.+$
 
 lint:
-	cargo clippy --locked $(CLIPPY_FLAGS)
+	go -C $(GO_DIR) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0 run --allow-parallel-runners
+
+audit:
+	go -C $(GO_DIR) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+test:
+	go -C $(GO_DIR) test -mod=readonly -count=1 -p 1 -failfast -race -run $(TEST_CASE) $(TEST_DIR)
 
 build:
-	cargo build --locked
+	mkdir -p $(dir $(BUILD_OUTPUT))
+	go -C $(GO_DIR) build -mod=readonly -o ../$(BUILD_OUTPUT) ./cmd/deezer-tui
 
-ci: check test lint
+ci: lint audit test

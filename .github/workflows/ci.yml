@@ -11,31 +11,27 @@ on:
       - reopened
 
 jobs:
-  test-and-lint:
+  go:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libasound2-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          components: clippy
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
 
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Lint
+        run: make lint
 
-      - name: Check
-        run: make check
+      - name: Audit
+        run: make audit
 
       - name: Test
         run: make test
 
-      - name: Lint
-        run: make lint
+      - name: Build
+        run: make build
