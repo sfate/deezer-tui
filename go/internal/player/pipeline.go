@@ -23,7 +23,7 @@ type MediaClient interface {
 }
 
 type Backend interface {
-	Start(stream io.ReadSeeker, onNaturalStop func()) (Controller, error)
+	Start(stream io.ReadSeeker, quality deezer.AudioQuality, onNaturalStop func()) (Controller, error)
 }
 
 type Controller interface {
@@ -205,7 +205,7 @@ func runTrackPipeline(
 			return nil
 		}
 		started = true
-		controller, err := backend.Start(buffer, func() {
+		controller, err := backend.Start(buffer, quality, func() {
 			select {
 			case naturalStopCh <- struct{}{}:
 			default:

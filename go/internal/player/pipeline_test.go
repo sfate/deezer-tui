@@ -41,7 +41,7 @@ type fakeBackend struct {
 	stopped    bool
 }
 
-func (b *fakeBackend) Start(stream io.ReadSeeker, onNaturalStop func()) (Controller, error) {
+func (b *fakeBackend) Start(stream io.ReadSeeker, _ deezer.AudioQuality, onNaturalStop func()) (Controller, error) {
 	go func() {
 		data, err := io.ReadAll(stream)
 		if err != nil {
