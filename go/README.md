@@ -5,10 +5,11 @@ This directory is the parallel Go rewrite of the Rust `deezer-tui` codebase.
 Current scope:
 - `internal/config`: config and audio-quality model
 - `internal/app`: deterministic app state, queue behavior, Flow pagination state, and navigation logic
+- `internal/deezer`: Deezer auth/session bootstrap, gateway/API loaders, media URL lookup, and crypto helpers
+- `internal/player`: stream buffer primitive for the future player backend
 
 What is intentionally not ported yet:
-- Deezer HTTP/auth client
-- audio streaming and decode pipeline
+- audio sink / playback backend
 - TUI rendering
 - MPRIS
 - Discord Rich Presence
@@ -24,7 +25,7 @@ Toolchain note:
 - target runtime/toolchain for the rewrite is `go1.26.2`
 
 Planned next phases:
-1. port Deezer auth/session/client logic
+1. choose and wire the Go audio backend around `internal/player`
 2. port playback queue engine and player control surface
 3. build the Bubble Tea based TUI shell
 4. port MPRIS and Discord integrations
