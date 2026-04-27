@@ -1,18 +1,25 @@
 package config
 
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+)
+
 type Theme string
 
 const (
-	ThemeSpotifyDark Theme = "spotify_dark"
-	ThemeNcmpcppBlue Theme = "ncmpcpp_blue"
+	ThemeSpotifyDark Theme = "SpotifyDark"
+	ThemeNcmpcppBlue Theme = "NcmpcppBlue"
 )
 
-type AudioQuality uint8
+type AudioQuality string
 
 const (
-	AudioQuality128 AudioQuality = iota
-	AudioQuality320
-	AudioQualityFlac
+	AudioQuality128  AudioQuality = "Kbps128"
+	AudioQuality320  AudioQuality = "Kbps320"
+	AudioQualityFlac AudioQuality = "Flac"
 )
 
 func (q AudioQuality) FormatCode() uint8 {
@@ -37,17 +44,17 @@ func AudioQualityFromFormatCode(code uint8) (AudioQuality, bool) {
 	case 9:
 		return AudioQualityFlac, true
 	default:
-		return 0, false
+		return "", false
 	}
 }
 
 type Config struct {
-	Theme               Theme
-	CrossfadeEnabled    bool
-	CrossfadeDurationMS uint64
-	DefaultQuality      AudioQuality
-	DiscordRPCEnabled   bool
-	ARL                 string
+	Theme               Theme        `json:"theme"`
+	CrossfadeEnabled    bool         `json:"crossfade_enabled"`
+	CrossfadeDurationMS uint64       `json:"crossfade_duration_ms"`
+	DefaultQuality      AudioQuality `json:"default_quality"`
+	DiscordRPCEnabled   bool         `json:"discord_rpc_enabled"`
+	ARL                 string       `json:"arl"`
 }
 
 func Default() Config {
@@ -59,4 +66,41 @@ func Default() Config {
 		DiscordRPCEnabled:   false,
 		ARL:                 "",
 	}
+}
+
+func ConfigFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.New("could not resolve the user's home directory")
+	}
+	return filepath.Join(home, ".deezer-tui-config.json"), nil
+}
+
+func Load() Config {
+	path, err := ConfigFilePath()
+	if err != nil {
+		return Default()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Default()
+	}
+
+	cfg := Default()
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Default()
+	}
+	return cfg
+}
+
+func Save(cfg Config) error {
+	path, err := ConfigFilePath()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }

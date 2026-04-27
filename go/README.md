@@ -7,7 +7,7 @@ Current scope:
 - `internal/app`: deterministic app state, queue behavior, Flow pagination state, and navigation logic
 - `internal/deezer`: Deezer auth/session bootstrap, gateway/API loaders, media URL lookup, and crypto helpers
 - `internal/player`: stream buffer primitive for the future player backend
-- `internal/tui`: first Bubble Tea shell over the Go app state
+- `internal/tui`: Bubble Tea shell wired to real Deezer Home, Flow, Explore, Favorites, and playlists
 - `cmd/deezer-tui`: runnable Go entrypoint
 
 What is intentionally not ported yet:
@@ -15,6 +15,7 @@ What is intentionally not ported yet:
 - MPRIS
 - Discord Rich Presence
 - cover-art/image protocol support
+- interactive search input and settings editing
 
 Why start here:
 - the state machine is the most testable part of the app
@@ -31,6 +32,14 @@ Build and run from the repository root:
 make build
 ./target/release/deezer-tui
 ```
+
+The Go app loads the same config file as the Rust app:
+
+```bash
+~/.deezer-tui-config.json
+```
+
+At minimum, that file needs a valid `arl` value for Deezer requests to work.
 
 Useful checks:
 

@@ -33,7 +33,8 @@ The active rewrite is under [go/](./go) and uses Bubble Tea for the TUI.
 
 Current status:
 - the Go app builds and runs
-- the Bubble Tea shell is in place
+- the Bubble Tea shell is in place and now loads real Deezer Home, Flow, Explore, Favorites, and playlists
+- the Go app reads the same `~/.deezer-tui-config.json` file as the Rust app, including the saved `arl`
 - Deezer client, Flow logic, and playback pipeline scaffolding are ported
 - feature parity with the Rust app is not complete yet
 
@@ -59,6 +60,14 @@ Run it with:
 ```bash
 ./target/release/deezer-tui
 ```
+
+The Go rewrite expects your Deezer `arl` in:
+
+```bash
+~/.deezer-tui-config.json
+```
+
+If you have already used the Rust app, the Go app will reuse that same config file.
 
 For a direct dev run without creating the release binary:
 

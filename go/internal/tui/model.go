@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,27 +11,110 @@ import (
 	"deezer-tui-go/internal/config"
 )
 
+type bootstrapLoadedMsg struct {
+	playlists []app.Playlist
+}
+
+type collectionLoadedMsg struct {
+	id       string
+	title    string
+	tracks   []app.Track
+	isFlow   bool
+	append   bool
+	autoplay bool
+}
+
+type loadFailedMsg struct {
+	message string
+}
+
 type Model struct {
 	app    *app.App
+	loader Loader
 	width  int
 	height int
 }
 
 func New() Model {
-	state := app.New(config.Default())
-	seedApp(state)
+	return NewWithConfig(config.Load())
+}
 
+func NewWithConfig(cfg config.Config) Model {
+	state := app.New(cfg)
+
+	var loader Loader
+	status := "Set ARL in ~/.deezer-tui-config.json to load Deezer data"
+	if strings.TrimSpace(cfg.ARL) != "" {
+		deezerLoader, err := NewDeezerLoader(cfg)
+		if err != nil {
+			status = fmt.Sprintf("Deezer client error: %v", err)
+		} else {
+			loader = deezerLoader
+			status = "Loading Deezer library..."
+		}
+	}
+
+	state.StatusMessage = status
 	return Model{
-		app: state,
+		app:    state,
+		loader: loader,
+	}
+}
+
+func NewWithLoader(cfg config.Config, loader Loader) Model {
+	state := app.New(cfg)
+	state.StatusMessage = "Loading Deezer library..."
+	if loader == nil {
+		state.StatusMessage = "No Deezer loader configured"
+	}
+	return Model{
+		app:    state,
+		loader: loader,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	if m.loader == nil {
+		return nil
+	}
+	return bootstrapCmd(m.loader)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case bootstrapLoadedMsg:
+		m.app.Playlists = msg.playlists
+		m.app.PlaylistState.Select(intPtr(0))
+		m.app.StatusMessage = fmt.Sprintf("Loaded %d playlists", len(msg.playlists))
+		return m, loadHomeCmd(m.loader)
+	case collectionLoadedMsg:
+		if msg.isFlow && msg.append {
+			result := m.app.AppendFlowTracks(msg.tracks, msg.autoplay)
+			if result.AppendedCount == 0 {
+				m.app.IsPlaying = false
+				m.app.StatusMessage = "Flow returned no new tracks"
+				return m, nil
+			}
+			m.app.FlowNextIndex += len(msg.tracks)
+			m.app.StatusMessage = fmt.Sprintf("Appended %d Flow tracks", result.AppendedCount)
+			return m, nil
+		}
+
+		m.app.CurrentPlaylistID = stringPtr(msg.id)
+		if msg.isFlow {
+			m.app.FlowNextIndex = len(msg.tracks)
+			m.app.IsFlowQueue = true
+			m.app.LoadFlowTracks(msg.tracks, msg.autoplay)
+			m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", msg.title, len(msg.tracks))
+			return m, nil
+		}
+
+		m.loadCollection(msg.id, msg.title, msg.tracks)
+		return m, nil
+	case loadFailedMsg:
+		m.app.StatusMessage = msg.message
+		m.app.FlowLoadingMore = false
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -51,7 +135,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.app.HandleRight()
 		case "enter":
-			m.handleEnter()
+			return m, m.handleEnter()
 		case " ":
 			m.togglePlayPause()
 		case "p":
@@ -148,44 +232,41 @@ func (m *Model) togglePlayPause() {
 	}
 }
 
-func (m *Model) handleEnter() {
+func (m *Model) handleEnter() tea.Cmd {
 	switch m.app.ActivePanel {
 	case app.ActivePanelNavigation:
 		index := derefOrZero(m.app.NavState.Selected())
 		switch index {
 		case 0:
-			m.loadStaticCollection("__home__", "Home", sampleHomeTracks())
+			return loadHomeCmd(m.loader)
 		case 1:
-			m.app.CurrentPlaylistID = stringPtr("__flow__")
-			m.app.FlowNextIndex = len(sampleFlowTracks())
-			m.app.LoadFlowTracks(sampleFlowTracks(), true)
-			m.app.StatusMessage = fmt.Sprintf("Loaded Flow (%d tracks)", len(m.app.CurrentTracks))
+			return loadFlowCmd(m.loader, 0, false, true)
 		case 2:
-			m.loadStaticCollection("__explore__", "Explore", sampleExploreTracks())
+			return loadExploreCmd(m.loader)
 		case 3:
-			m.loadStaticCollection("__favorites__", "Favorites", sampleFavoriteTracks())
+			return loadFavoritesCmd(m.loader)
 		case 4:
 			m.app.ViewingSettings = true
 			m.app.ActivePanel = app.ActivePanelMain
-			m.app.StatusMessage = "Settings placeholder"
+			m.app.StatusMessage = "Settings view is read-only in the Go rewrite"
 		}
 	case app.ActivePanelPlaylists:
 		if len(m.app.Playlists) == 0 {
-			return
+			return nil
 		}
 		idx := derefOrZero(m.app.PlaylistState.Selected())
 		if idx >= len(m.app.Playlists) {
-			return
+			return nil
 		}
 		pl := m.app.Playlists[idx]
-		m.loadStaticCollection(pl.ID, pl.Title, samplePlaylistTracks(pl.ID))
+		return loadPlaylistCmd(m.loader, pl.ID, pl.Title)
 	case app.ActivePanelMain:
 		if m.app.ViewingSettings {
-			m.app.StatusMessage = "Settings action not wired yet"
-			return
+			m.app.StatusMessage = "Settings actions not wired yet"
+			return nil
 		}
 		if len(m.app.CurrentTracks) == 0 {
-			return
+			return nil
 		}
 		selected := derefOrZero(m.app.MainState.Selected())
 		if selected == 0 {
@@ -195,7 +276,7 @@ func (m *Model) handleEnter() {
 			m.app.QueueState.Select(intPtr(0))
 			m.app.IsPlaying = true
 			m.app.StatusMessage = fmt.Sprintf("Queued %d tracks", len(m.app.QueueTracks))
-			return
+			return nil
 		}
 		trackIndex := selected - 1
 		if trackIndex >= 0 && trackIndex < len(m.app.CurrentTracks) {
@@ -209,9 +290,10 @@ func (m *Model) handleEnter() {
 			m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
 		}
 	}
+	return nil
 }
 
-func (m *Model) loadStaticCollection(id, title string, tracks []app.Track) {
+func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.CurrentPlaylistID = stringPtr(id)
 	m.app.CurrentTracks = append([]app.Track(nil), tracks...)
 	m.app.MainState.Select(intPtr(0))
@@ -220,9 +302,9 @@ func (m *Model) loadStaticCollection(id, title string, tracks []app.Track) {
 	m.app.ShowingSearchResult = false
 	m.app.ViewingSettings = false
 	m.app.ActivePanel = app.ActivePanelMain
-	if id != "__flow__" && !m.app.IsFlowQueue {
-		m.app.FlowNextIndex = 0
-	}
+	m.app.IsFlowQueue = false
+	m.app.FlowLoadingMore = false
+	m.app.FlowNextIndex = 0
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
 }
 
@@ -275,7 +357,7 @@ func (m Model) renderMain() string {
 			"  Quality: 320kbps",
 			"  Discord RPC: off",
 			"  Crossfade: off",
-			"  ARL: configured in Rust app",
+			"  ARL: loaded from ~/.deezer-tui-config.json",
 		)
 	} else if len(m.app.CurrentTracks) == 0 {
 		lines = append(lines, "No tracks loaded")
@@ -339,79 +421,82 @@ func (m Model) renderPanel(title, body string, active bool) string {
 	return padBlock(header+"\n"+body, max0(m.width/4-2), 18)
 }
 
-func seedApp(a *app.App) {
-	a.Playlists = []app.Playlist{
-		{ID: "pl-1", Title: "Morning Run"},
-		{ID: "pl-2", Title: "Focus Mix"},
-		{ID: "pl-3", Title: "Late Night"},
+func bootstrapCmd(loader Loader) tea.Cmd {
+	if loader == nil {
+		return nil
 	}
-	a.CurrentPlaylistID = stringPtr("__home__")
-	a.CurrentTracks = sampleHomeTracks()
-	a.MainState.Select(intPtr(0))
-	a.StatusMessage = "Bubble Tea shell ready"
-}
-
-func sampleHomeTracks() []app.Track {
-	return []app.Track{
-		{ID: "101", Title: "Northern Lights", Artist: "Kira Vale"},
-		{ID: "102", Title: "Afterglow", Artist: "June Arcade"},
-		{ID: "103", Title: "Signal Fade", Artist: "Static Youth"},
-	}
-}
-
-func sampleFlowTracks() []app.Track {
-	return []app.Track{
-		{ID: "201", Title: "Current Drift", Artist: "Velvet Echo"},
-		{ID: "202", Title: "Night Transit", Artist: "Aster Lane"},
-		{ID: "203", Title: "Pulse Memory", Artist: "Blue Halcyon"},
-	}
-}
-
-func sampleExploreTracks() []app.Track {
-	return []app.Track{
-		{ID: "301", Title: "Golden Frame", Artist: "Suna"},
-		{ID: "302", Title: "Warm Circuit", Artist: "Yard Static"},
-		{ID: "303", Title: "Daybreak Motel", Artist: "Mina Rowe"},
-	}
-}
-
-func sampleFavoriteTracks() []app.Track {
-	return []app.Track{
-		{ID: "401", Title: "Tidal Glass", Artist: "Arlo Finch"},
-		{ID: "402", Title: "Velour Skies", Artist: "Nina Crest"},
-		{ID: "403", Title: "Archive 94", Artist: "The Meridian"},
-	}
-}
-
-func samplePlaylistTracks(id string) []app.Track {
-	switch id {
-	case "pl-1":
-		return []app.Track{
-			{ID: "501", Title: "Stride", Artist: "Mosaic Club"},
-			{ID: "502", Title: "Pavement Heat", Artist: "Rin Moto"},
-			{ID: "503", Title: "Breathing Room", Artist: "Lio Park"},
+	return func() tea.Msg {
+		data, err := loader.Bootstrap(context.Background())
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Bootstrap error: %v", err)}
 		}
-	case "pl-2":
-		return []app.Track{
-			{ID: "601", Title: "Worklight", Artist: "Grey Atlas"},
-			{ID: "602", Title: "Signal Desk", Artist: "Paper Harbor"},
-			{ID: "603", Title: "Quiet Engine", Artist: "Taro Bloom"},
-		}
-	default:
-		return []app.Track{
-			{ID: "701", Title: "Red Window", Artist: "Cinder Vale"},
-			{ID: "702", Title: "Taxi Static", Artist: "Neon District"},
-			{ID: "703", Title: "Sleep Dealer", Artist: "Marlowe"},
-		}
+		return bootstrapLoadedMsg{playlists: data.Playlists}
 	}
 }
 
-func formatQueue(tracks []app.Track) []string {
-	queue := make([]string, 0, len(tracks))
-	for _, track := range tracks {
-		queue = append(queue, track.Title+" - "+track.Artist)
+func loadHomeCmd(loader Loader) tea.Cmd {
+	if loader == nil {
+		return nil
 	}
-	return queue
+	return func() tea.Msg {
+		tracks, err := loader.LoadHome(context.Background())
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Home error: %v", err)}
+		}
+		return collectionLoadedMsg{id: "__home__", title: "Home", tracks: tracks}
+	}
+}
+
+func loadFlowCmd(loader Loader, index int, append bool, autoplay bool) tea.Cmd {
+	if loader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		tracks, err := loader.LoadFlow(context.Background(), index)
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Flow error: %v", err)}
+		}
+		return collectionLoadedMsg{id: "__flow__", title: "Flow", tracks: tracks, isFlow: true, append: append, autoplay: autoplay}
+	}
+}
+
+func loadExploreCmd(loader Loader) tea.Cmd {
+	if loader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		tracks, err := loader.LoadExplore(context.Background())
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Explore error: %v", err)}
+		}
+		return collectionLoadedMsg{id: "__explore__", title: "Explore", tracks: tracks}
+	}
+}
+
+func loadFavoritesCmd(loader Loader) tea.Cmd {
+	if loader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		tracks, err := loader.LoadFavorites(context.Background())
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Favorites error: %v", err)}
+		}
+		return collectionLoadedMsg{id: "__favorites__", title: "Favorites", tracks: tracks}
+	}
+}
+
+func loadPlaylistCmd(loader Loader, id string, title string) tea.Cmd {
+	if loader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		tracks, err := loader.LoadPlaylist(context.Background(), id)
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Playlist error: %v", err)}
+		}
+		return collectionLoadedMsg{id: id, title: title, tracks: tracks}
+	}
 }
 
 func repeatModeLabel(mode app.RepeatMode) string {
@@ -480,6 +565,14 @@ func joinColumns(columns ...string) string {
 		rows = append(rows, strings.Join(parts, "  "))
 	}
 	return strings.Join(rows, "\n")
+}
+
+func formatQueue(tracks []app.Track) []string {
+	queue := make([]string, 0, len(tracks))
+	for _, track := range tracks {
+		queue = append(queue, track.Title+" - "+track.Artist)
+	}
+	return queue
 }
 
 func padBlock(content string, width, height int) string {
