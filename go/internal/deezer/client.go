@@ -329,6 +329,25 @@ func (c *Client) FetchEncryptedBytesFromSignedURL(ctx context.Context, signedURL
 	return payload, nil
 }
 
+func (c *Client) OpenSignedStream(ctx context.Context, signedURL string) (io.ReadCloser, int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("build signed stream request: %w", err)
+	}
+	c.applyHeaders(req, true)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open signed Deezer audio stream: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, 0, fmt.Errorf("signed Deezer audio stream returned status %d", resp.StatusCode)
+	}
+
+	return resp.Body, resp.ContentLength, nil
+}
+
 func (c *Client) FetchPlaylistMetadata(ctx context.Context, playlistID string) (PlaylistMetadata, error) {
 	response, err := c.authenticatedGatewayCall(ctx, "deezer.pagePlaylist", map[string]any{
 		"playlist_id": playlistID,
