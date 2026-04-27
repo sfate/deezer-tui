@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"golang.org/x/crypto/blowfish"
+	"golang.org/x/crypto/blowfish" //nolint:staticcheck // Deezer's legacy encrypted stream format uses Blowfish-CBC.
 )
 
 const (

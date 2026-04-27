@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/cipher"
 	"io"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"deezer-tui-go/internal/deezer"
-	"golang.org/x/crypto/blowfish"
+	"golang.org/x/crypto/blowfish" //nolint:staticcheck // Tests must mirror Deezer's legacy Blowfish stream encryption.
 )
 
 type fakeMediaClient struct {
@@ -83,10 +85,10 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 	}
 	backend := &fakeBackend{}
 
-	var changed bool
-	var stopped bool
-	var progressCurrent uint64
-	var progressTotal uint64
+	var changed atomic.Bool
+	var stopped atomic.Bool
+	var progressCurrent atomic.Uint64
+	var progressTotal atomic.Uint64
 
 	session := StartTrackPipeline(
 		context.Background(),
@@ -97,14 +99,14 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 		0,
 		EventHandler{
 			OnTrackChanged: func(meta deezer.TrackMetadata, quality deezer.AudioQuality, initialMS uint64) {
-				changed = meta.ID == "42" && quality == deezer.AudioQuality320 && initialMS == 0
+				changed.Store(meta.ID == "42" && quality == deezer.AudioQuality320 && initialMS == 0)
 			},
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
-				progressCurrent = currentMS
-				progressTotal = totalMS
+				progressCurrent.Store(currentMS)
+				progressTotal.Store(totalMS)
 			},
 			OnPlaybackStopped: func() {
-				stopped = true
+				stopped.Store(true)
 			},
 		},
 		PipelineOptions{
@@ -117,14 +119,21 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 		t.Fatalf("wait: %v", err)
 	}
 
-	if !changed {
+	for range 1000 {
+		if stopped.Load() {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if !changed.Load() {
 		t.Fatalf("expected track-changed event")
 	}
-	if !stopped {
+	if !stopped.Load() {
 		t.Fatalf("expected playback-stopped event")
 	}
-	if progressCurrent != 0 || progressTotal == 0 {
-		t.Fatalf("unexpected progress event current=%d total=%d", progressCurrent, progressTotal)
+	if progressCurrent.Load() != 0 || progressTotal.Load() == 0 {
+		t.Fatalf("unexpected progress event current=%d total=%d", progressCurrent.Load(), progressTotal.Load())
 	}
 
 	backend.mu.Lock()

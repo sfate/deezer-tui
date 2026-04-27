@@ -316,7 +316,7 @@ func (c *Client) FetchEncryptedBytesFromSignedURL(ctx context.Context, signedURL
 	if err != nil {
 		return nil, fmt.Errorf("download encrypted audio stream: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("signed CDN request returned status %d", resp.StatusCode)
@@ -341,7 +341,7 @@ func (c *Client) OpenSignedStream(ctx context.Context, signedURL string) (io.Rea
 		return nil, 0, fmt.Errorf("open signed Deezer audio stream: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		return nil, 0, fmt.Errorf("signed Deezer audio stream returned status %d", resp.StatusCode)
 	}
 
@@ -812,7 +812,7 @@ func (c *Client) doJSON(req *http.Request, out *map[string]any) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rawBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

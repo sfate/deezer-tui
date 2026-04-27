@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"golang.org/x/crypto/blowfish"
+	"golang.org/x/crypto/blowfish" //nolint:staticcheck // Tests must mirror Deezer's legacy Blowfish stream encryption.
 )
 
 func TestDerivedKeyIsStable(t *testing.T) {

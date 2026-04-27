@@ -165,7 +165,7 @@ func runTrackPipeline(
 	if err != nil {
 		return reportErr(handler, err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	trackKey := deezer.DeriveBlowfishKey(metadata.ID)
 	trackDurationMS := uint64(0)
