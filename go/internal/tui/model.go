@@ -959,7 +959,7 @@ func (m Model) renderStatusLine() string {
 		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
 	}
 	lines := []string{
-		" State:       " + ternary(m.app.IsPlaying, "Playing", "Paused"),
+		" State:       " + m.displayState(),
 		" Track:       " + title,
 		" Artist:      " + artist,
 		" Progress:    " + progress,
@@ -1439,6 +1439,36 @@ func qualityLabel(q config.AudioQuality) string {
 		return "FLAC"
 	default:
 		return "320 kbps"
+	}
+}
+
+func (m Model) displayState() string {
+	status := strings.TrimSpace(m.app.StatusMessage)
+	switch {
+	case strings.EqualFold(status, "Buffering..."):
+		return "Buffering"
+	case strings.EqualFold(status, "Paused"):
+		return "Paused"
+	case strings.EqualFold(status, "Playing"):
+		return "Playing"
+	case strings.EqualFold(status, "Starting playback..."):
+		return "Starting"
+	case strings.EqualFold(status, "Playback finished"):
+		return "Finished"
+	case strings.HasPrefix(status, "Playback error:"):
+		return "Playback error"
+	case strings.HasPrefix(status, "Playback runtime error:"):
+		return "Playback runtime error"
+	case strings.EqualFold(status, "Loading more Flow..."):
+		return "Loading more Flow"
+	case m.pauseRequested:
+		return "Paused"
+	case m.app.IsPlaying:
+		return "Playing"
+	case m.session != nil:
+		return "Ready"
+	default:
+		return "Stopped"
 	}
 }
 

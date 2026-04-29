@@ -213,6 +213,14 @@ func TestPlaybackStartHonorsPendingPause(t *testing.T) {
 	}
 }
 
+func TestDisplayStateUsesStatusMessage(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.StatusMessage = "Buffering..."
+	if got := model.displayState(); got != "Buffering" {
+		t.Fatalf("expected Buffering state, got %q", got)
+	}
+}
+
 func TestRenderArtworkANSIProducesBlockGrid(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
