@@ -3,6 +3,9 @@ package tui
 import (
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -100,6 +103,134 @@ func TestTruncatePreservesUTF8(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncate returned invalid utf8: %q", got)
+	}
+}
+
+func TestViewShowsProgressBar(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.height = 40
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.CurrentTracks = []app.Track{
+		{ID: "1", Title: "Selected Song", Artist: "Chosen Artist"},
+	}
+	model.app.MainState.Select(intPtr(1))
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "2",
+		Title:     "Live Song",
+		Artist:    "Current Artist",
+		CurrentMS: 45000,
+		TotalMS:   180000,
+	}
+	model.app.IsPlaying = true
+	model.artworkANSI = strings.Join([]string{
+		"\x1b[38;2;255;0;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;255;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;0;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;255;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;0;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;255;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;128;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;128;0;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;0;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;255;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;0;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;255;0m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;255;0;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+		"\x1b[38;2;0;255;255m▀▀▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m",
+	}, "\n")
+
+	view := model.View().Content
+	if !strings.Contains(view, "[") || !strings.Contains(view, "00:45 / 03:00") {
+		t.Fatal("expected progress bar in view")
+	}
+	if !strings.Contains(view, "Track:") {
+		t.Fatal("expected track info in status area")
+	}
+	if !strings.Contains(view, "State:") {
+		t.Fatal("expected state line in status area")
+	}
+	if !strings.Contains(view, "Quality:") || !strings.Contains(view, "Source:") {
+		t.Fatal("expected track metadata lines in status area")
+	}
+	if !strings.Contains(view, "Live Song") {
+		t.Fatal("expected current song title in status area")
+	}
+	if !strings.Contains(view, "03:00") || !strings.Contains(view, "320 kbps") {
+		t.Fatal("expected useful track metadata in info line")
+	}
+	if !strings.Contains(view, "▀") {
+		t.Fatal("expected artwork block in status area")
+	}
+	if !strings.Contains(view, "space play/pause") {
+		t.Fatal("expected spacebar control hint in view")
+	}
+}
+
+func TestSpacebarStartsSelectedTrack(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.width = 120
+	model.height = 40
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.CurrentTracks = []app.Track{
+		{ID: "1", Title: "Selected Song", Artist: "Chosen Artist"},
+	}
+	model.app.MainState.Select(intPtr(1))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected playback command from spacebar")
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "1" {
+		t.Fatalf("unexpected playback start %#v", runtime.started)
+	}
+	if !updated.app.IsPlaying {
+		t.Fatal("expected playback state to start")
+	}
+}
+
+func TestPlaybackStartHonorsPendingPause(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	session := &fakePlaybackSession{}
+	model.nextPlaybackID = 1
+	model.pauseRequested = true
+
+	nextModel, cmd := model.Update(playbackStartedMsg{playID: 1, session: session})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected follow-up playback wait/listen commands")
+	}
+	if !session.paused {
+		t.Fatal("expected session to be paused immediately")
+	}
+	if updated.app.IsPlaying {
+		t.Fatal("expected app to stay paused")
+	}
+}
+
+func TestRenderArtworkANSIProducesBlockGrid(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 40), G: uint8(y * 40), B: 120, A: 255})
+		}
+	}
+
+	art := renderArtworkANSI(img, 4, 4)
+	lines := strings.Split(art, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 artwork rows, got %d", len(lines))
+	}
+	if !strings.Contains(art, "▀") {
+		t.Fatal("expected half-block artwork glyphs")
+	}
+	if !strings.Contains(art, "\x1b[38;2;") || !strings.Contains(art, "\x1b[48;2;") {
+		t.Fatal("expected ANSI foreground/background color sequences in artwork")
 	}
 }
 

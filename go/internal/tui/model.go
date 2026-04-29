@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/mattn/go-runewidth"
+	cellansi "github.com/charmbracelet/x/ansi"
 
 	"deezer-tui-go/internal/app"
 	"deezer-tui-go/internal/config"
@@ -70,6 +70,11 @@ type playbackFinishedMsg struct {
 
 type playbackTickMsg struct{}
 
+type artworkLoadedMsg struct {
+	url string
+	art string
+}
+
 type Model struct {
 	app            *app.App
 	loader         Loader
@@ -79,6 +84,10 @@ type Model struct {
 	progressBaseMS uint64
 	progressSince  time.Time
 	progressActive bool
+	pauseRequested bool
+	artworkURL     string
+	artworkANSI    string
+	artCache       map[string]string
 	width          int
 	height         int
 	nextPlaybackID int
@@ -110,6 +119,7 @@ func NewWithConfig(cfg config.Config) Model {
 		loader:         loader,
 		runtime:        newPlayerRuntime(loader),
 		playbackEvents: make(chan tea.Msg, 32),
+		artCache:       map[string]string{},
 	}
 }
 
@@ -208,6 +218,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressBaseMS = 0
 		m.progressSince = time.Time{}
 		m.app.StatusMessage = "Buffering..."
+		if m.pauseRequested {
+			m.session.Pause()
+			m.app.IsPlaying = false
+			m.app.StatusMessage = "Paused"
+		}
 		return m, tea.Batch(
 			waitPlaybackCmd(msg.playID, msg.session),
 			listenPlaybackEventCmd(m.playbackEvents),
@@ -228,6 +243,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			CurrentMS:   msg.initialMS,
 			TotalMS:     totalMS,
 			AlbumArtURL: msg.meta.AlbumArtURL,
+		}
+		m.artworkANSI = ""
+		m.artworkURL = ""
+		if msg.meta.AlbumArtURL != nil && strings.TrimSpace(*msg.meta.AlbumArtURL) != "" {
+			m.artworkURL = *msg.meta.AlbumArtURL
+			if cached, ok := m.artCache[m.artworkURL]; ok {
+				m.artworkANSI = cached
+				return m, listenPlaybackEventCmd(m.playbackEvents)
+			}
+			return m, tea.Batch(
+				listenPlaybackEventCmd(m.playbackEvents),
+				fetchArtworkCmd(m.artworkURL, 14, 14),
+			)
 		}
 		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackProgressMsg:
@@ -268,6 +296,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.handlePlaybackFinished()
+	case artworkLoadedMsg:
+		if msg.url == "" || msg.url != m.artworkURL {
+			return m, nil
+		}
+		m.artCache[msg.url] = msg.art
+		m.artworkANSI = msg.art
+		return m, nil
 	case playbackTickMsg:
 		if !m.progressActive || !m.app.IsPlaying || m.app.NowPlaying == nil {
 			return m, nil
@@ -306,8 +341,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.HandleRight()
 		case "enter":
 			return m, m.handleEnter()
-		case " ":
-			m.togglePlayPause()
+		case " ", "space":
+			return m, m.handleSpacebar()
 		case "n":
 			return m, m.handleNext()
 		case "p":
@@ -337,7 +372,7 @@ func (m Model) View() tea.View {
 
 	header := m.renderHeader()
 	searchBar := m.renderSearchBar()
-	contentHeight := max(14, m.height-9)
+	contentHeight := max(10, m.height-20)
 	body := joinColumns(
 		m.renderSidebar(contentHeight),
 		m.renderMain(contentHeight),
@@ -397,6 +432,8 @@ func (m *Model) togglePlayPause() {
 	if m.app.IsPlaying {
 		if m.session != nil {
 			m.session.Pause()
+		} else {
+			m.pauseRequested = true
 		}
 		if m.progressActive && m.app.NowPlaying != nil {
 			elapsed := uint64(time.Since(m.progressSince).Milliseconds())
@@ -410,6 +447,7 @@ func (m *Model) togglePlayPause() {
 		return
 	}
 	if m.session != nil {
+		m.pauseRequested = false
 		m.session.Resume()
 		m.app.IsPlaying = true
 		if m.app.NowPlaying != nil {
@@ -422,15 +460,46 @@ func (m *Model) togglePlayPause() {
 		}
 		return
 	}
-	if len(m.app.QueueTracks) == 0 && len(m.app.CurrentTracks) > 0 {
-		m.app.QueueTracks = append([]app.Track(nil), m.app.CurrentTracks...)
-		m.app.Queue = formatQueue(m.app.QueueTracks)
-		m.app.QueueIndex = intPtr(0)
-		m.app.QueueState.Select(intPtr(0))
+}
+
+func (m *Model) handleSpacebar() tea.Cmd {
+	if m.session != nil || m.app.IsPlaying {
+		m.togglePlayPause()
+		return nil
 	}
-	if len(m.app.QueueTracks) > 0 && m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
-		return
+
+	if track := m.selectedTrack(); track != nil {
+		switch m.app.ActivePanel {
+		case app.ActivePanelQueue:
+			idx := derefOrZero(m.app.QueueState.Selected())
+			if idx >= 0 && idx < len(m.app.QueueTracks) {
+				m.app.QueueIndex = intPtr(idx)
+				m.app.QueueState.Select(intPtr(idx))
+				m.app.IsPlaying = true
+				m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
+				return m.startTrackPlayback(track.ID)
+			}
+		case app.ActivePanelMain, app.ActivePanelSearch:
+			m.app.QueueTracks = []app.Track{*track}
+			m.app.Queue = formatQueue(m.app.QueueTracks)
+			m.app.QueueIndex = intPtr(0)
+			m.app.QueueState.Select(intPtr(0))
+			m.app.IsPlaying = true
+			m.app.IsFlowQueue = false
+			m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
+			return m.startTrackPlayback(track.ID)
+		}
 	}
+
+	switch m.app.ActivePanel {
+	case app.ActivePanelMain, app.ActivePanelSearch, app.ActivePanelQueue:
+		return m.handleEnter()
+	default:
+		if len(m.app.QueueTracks) > 0 && m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
+			return m.startTrackPlayback(m.app.QueueTracks[*m.app.QueueIndex].ID)
+		}
+	}
+	return nil
 }
 
 func (m *Model) handleEnter() tea.Cmd {
@@ -662,6 +731,7 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	m.progressActive = false
 	m.progressBaseMS = 0
 	m.progressSince = time.Time{}
+	m.pauseRequested = false
 	m.nextPlaybackID++
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
@@ -847,23 +917,13 @@ func (m Model) renderSearchBar() string {
 	if m.app.IsSearching {
 		label = " Search Mode "
 	}
-	help := "tab switch | hjkl move | enter select | / search"
+	help := "tab switch | hjkl move | enter select | space play/pause | / search"
 	return renderLineBox(fmt.Sprintf("%s %s", label, query), help, m.width)
 }
 
 func (m Model) renderPlaybar() string {
-	track := "Nothing playing"
-	progress := "[--------------------] 00:00 / 00:00"
-	if m.app.NowPlaying != nil {
-		track = m.app.NowPlaying.Title + " - " + m.app.NowPlaying.Artist
-		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, 20)
-	} else if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
-		item := m.app.QueueTracks[*m.app.QueueIndex]
-		track = item.Title + " - " + item.Artist
-	}
-	state := ternary(m.app.IsPlaying, "Playing", "Paused")
-	left := fmt.Sprintf(" %s | %s", state, truncate(track, 42))
-	right := fmt.Sprintf("%s | vol %d%% | n/p next prev | +/- volume", progress, m.app.Volume)
+	left := " space play/pause | n/p next prev | +/- volume "
+	right := fmt.Sprintf("vol %d%% | %s", m.app.Volume, ternary(m.app.IsPlaying, "playing", "paused"))
 	return renderLineBox(left, right, m.width)
 }
 
@@ -875,7 +935,48 @@ func (m Model) renderHeader() string {
 }
 
 func (m Model) renderStatusLine() string {
-	return renderLineBox(" Status ", truncate(m.app.StatusMessage, max(20, m.width-18)), m.width)
+	title := "Nothing playing"
+	artist := "-"
+	progress := renderProgress(0, 0, max(20, min(48, m.width-26)))
+	source := displayCollectionTitle(derefString(m.app.CurrentPlaylistID, "Browse"))
+	quality := "-"
+	elapsed := "00:00"
+	total := "00:00"
+	queueInfo := "-"
+	if m.app.NowPlaying != nil {
+		title = truncate(m.app.NowPlaying.Title, max(20, m.width-22))
+		artist = truncate(m.app.NowPlaying.Artist, max(20, m.width-22))
+		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, m.width-26)))
+		quality = qualityLabel(m.app.NowPlaying.Quality)
+		elapsed = formatClock(m.app.NowPlaying.CurrentMS)
+		total = formatClock(m.app.NowPlaying.TotalMS)
+	} else if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
+		track := m.app.QueueTracks[*m.app.QueueIndex]
+		title = truncate(track.Title, max(20, m.width-22))
+		artist = truncate(track.Artist, max(20, m.width-22))
+	}
+	if m.app.QueueIndex != nil && len(m.app.QueueTracks) > 0 {
+		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
+	}
+	lines := []string{
+		" State:       " + ternary(m.app.IsPlaying, "Playing", "Paused"),
+		" Track:       " + title,
+		" Artist:      " + artist,
+		" Progress:    " + progress,
+		" Elapsed:     " + elapsed + " / " + total,
+		" Quality:     " + quality,
+		" Source:      " + source,
+		" Queue:       " + queueInfo,
+	}
+	art := m.artworkANSI
+	if art == "" {
+		art = strings.Join(make([]string, 7), "\n")
+	}
+	body := joinColumns(
+		m.renderArtworkSlot(art, 16, 9),
+		m.renderTextSlot(strings.Join(lines, "\n"), max(24, m.width-24), 9, 1, 1),
+	)
+	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, m.width, 11)
 }
 
 func (m Model) renderPanel(title, body string, active bool, width, height int) string {
@@ -894,7 +995,7 @@ func (m Model) renderPanel(title, body string, active bool, width, height int) s
 		br = "╝"
 	}
 	innerWidth := max(12, width-2)
-	bodyHeight := max(6, height-2)
+	bodyHeight := max(1, height-2)
 	titleText := " " + truncate(title, max(1, innerWidth-2)) + " "
 	top := tl + titleText + strings.Repeat(h, max(0, innerWidth-textWidth(titleText))) + tr
 	lines := strings.Split(body, "\n")
@@ -907,6 +1008,55 @@ func (m Model) renderPanel(title, body string, active bool, width, height int) s
 	}
 	framed = append(framed, bl+strings.Repeat(h, innerWidth)+br)
 	return strings.Join(framed, "\n")
+}
+
+func (m Model) renderFixedBlock(content string, width, height int) string {
+	lines := strings.Split(content, "\n")
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	out := make([]string, 0, height)
+	for i := 0; i < height; i++ {
+		out = append(out, fitToWidth(lines[i], width))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (m Model) renderArtworkSlot(content string, width, height int) string {
+	art := m.renderFixedBlock(content, 14, 7)
+	lines := strings.Split(art, "\n")
+	out := make([]string, 0, height)
+	topPad := 1
+	bottomPad := 1
+	sidePad := 1
+	for i := 0; i < topPad; i++ {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	for _, line := range lines {
+		out = append(out, strings.Repeat(" ", sidePad)+fitToWidth(line, 14)+strings.Repeat(" ", sidePad))
+	}
+	for i := 0; i < bottomPad; i++ {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (m Model) renderTextSlot(content string, width, height, padX, padY int) string {
+	innerWidth := max(1, width-(padX*2))
+	innerHeight := max(1, height-(padY*2))
+	text := m.renderFixedBlock(content, innerWidth, innerHeight)
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, height)
+	for i := 0; i < padY; i++ {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	for _, line := range lines {
+		out = append(out, strings.Repeat(" ", padX)+fitToWidth(line, innerWidth)+strings.Repeat(" ", padX))
+	}
+	for len(out) < height {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	return strings.Join(out, "\n")
 }
 
 func bootstrapCmd(loader Loader) tea.Cmd {
@@ -1149,9 +1299,9 @@ func truncate(s string, width int) string {
 		return s
 	}
 	if width <= 3 {
-		return runewidth.Truncate(s, width, "")
+		return cellansi.Truncate(s, width, "")
 	}
-	return runewidth.Truncate(s, width, "...")
+	return cellansi.Truncate(s, width, "...")
 }
 
 func renderProgress(currentMS, totalMS uint64, width int) string {
@@ -1248,7 +1398,10 @@ func derefString(v *string, fallback string) string {
 }
 
 func padRight(s string, width int) string {
-	return runewidth.FillRight(s, width)
+	if textWidth(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-textWidth(s))
 }
 
 func fitToWidth(s string, width int) string {
@@ -1256,7 +1409,7 @@ func fitToWidth(s string, width int) string {
 }
 
 func textWidth(s string) int {
-	return runewidth.StringWidth(s)
+	return cellansi.StringWidth(s)
 }
 
 func activePanelLabel(panel app.ActivePanel) string {
@@ -1276,4 +1429,50 @@ func activePanelLabel(panel app.ActivePanel) string {
 	default:
 		return "app"
 	}
+}
+
+func qualityLabel(q config.AudioQuality) string {
+	switch q {
+	case config.AudioQuality128:
+		return "128 kbps"
+	case config.AudioQualityFlac:
+		return "FLAC"
+	default:
+		return "320 kbps"
+	}
+}
+
+func (m Model) selectedTrack() *app.Track {
+	switch m.app.ActivePanel {
+	case app.ActivePanelQueue:
+		idx := derefOrZero(m.app.QueueState.Selected())
+		if idx >= 0 && idx < len(m.app.QueueTracks) {
+			track := m.app.QueueTracks[idx]
+			return &track
+		}
+	case app.ActivePanelMain, app.ActivePanelSearch:
+		if len(m.app.CurrentTracks) == 0 {
+			return nil
+		}
+		idx := derefOrZero(m.app.MainState.Selected())
+		if m.app.ShowingSearchResult {
+			if m.app.SearchCategory != app.SearchCategoryTracks {
+				return nil
+			}
+			if idx >= 0 && idx < len(m.app.CurrentTracks) {
+				track := m.app.CurrentTracks[idx]
+				return &track
+			}
+			return nil
+		}
+		if idx <= 0 {
+			return nil
+		}
+		trackIdx := idx - 1
+		if trackIdx >= 0 && trackIdx < len(m.app.CurrentTracks) {
+			track := m.app.CurrentTracks[trackIdx]
+			return &track
+		}
+	}
+	return nil
 }
