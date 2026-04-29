@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -20,6 +21,8 @@ type fakeLoader struct {
 	explore   []app.Track
 	favorites []app.Track
 	playlist  []app.Track
+	search    SearchData
+	queries   []string
 }
 
 func (f *fakeLoader) Bootstrap(context.Context) (BootstrapData, error) {
@@ -44,6 +47,11 @@ func (f *fakeLoader) LoadFavorites(context.Context) ([]app.Track, error) {
 
 func (f *fakeLoader) LoadPlaylist(context.Context, string) ([]app.Track, error) {
 	return append([]app.Track(nil), f.playlist...), nil
+}
+
+func (f *fakeLoader) Search(_ context.Context, query string) (SearchData, error) {
+	f.queries = append(f.queries, query)
+	return f.search, nil
 }
 
 type fakePlaybackRuntime struct {
@@ -82,6 +90,16 @@ func TestViewUsesAltScreen(t *testing.T) {
 	}
 	if view.WindowTitle != "deezer-tui-go" {
 		t.Fatalf("unexpected window title %q", view.WindowTitle)
+	}
+}
+
+func TestTruncatePreservesUTF8(t *testing.T) {
+	got := truncate("Рор Hits 2026 | N...", 12)
+	if got == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncate returned invalid utf8: %q", got)
 	}
 }
 
@@ -230,5 +248,71 @@ func TestCanceledPlaybackCompletionIsIgnored(t *testing.T) {
 	}
 	if !updated.app.IsPlaying {
 		t.Fatal("expected canceled completion to leave playback state unchanged")
+	}
+}
+
+func TestEnterOnSearchPlaylistLoadsPlaylist(t *testing.T) {
+	loader := &fakeLoader{
+		search: SearchData{
+			Playlists: []app.Playlist{{ID: "pl-1", Title: "Focus"}},
+		},
+		playlist: []app.Track{{ID: "11", Title: "Track", Artist: "Artist"}},
+	}
+	model := NewWithLoaderAndRuntime(config.Default(), loader, &fakePlaybackRuntime{})
+	model.width = 120
+	model.height = 40
+	model.app.ShowingSearchResult = true
+	model.app.SearchCategory = app.SearchCategoryPlaylists
+	model.app.SearchPlaylists = loader.search.Playlists
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.MainState.Select(intPtr(0))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected playlist load command")
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if updated.app.CurrentPlaylistID == nil || *updated.app.CurrentPlaylistID != "pl-1" {
+		t.Fatal("expected selected playlist to load")
+	}
+	if len(updated.app.CurrentTracks) != 1 {
+		t.Fatal("expected playlist tracks to load")
+	}
+}
+
+func TestEnterOnSearchArtistStartsSearch(t *testing.T) {
+	loader := &fakeLoader{
+		search: SearchData{
+			Tracks: []app.Track{{ID: "99", Title: "Artist Track", Artist: "Aster Lane"}},
+		},
+	}
+	model := NewWithLoaderAndRuntime(config.Default(), loader, &fakePlaybackRuntime{})
+	model.width = 120
+	model.height = 40
+	model.app.ShowingSearchResult = true
+	model.app.SearchCategory = app.SearchCategoryArtists
+	model.app.SearchArtists = []app.Artist{{ID: "ar-1", Name: "Aster Lane"}}
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.MainState.Select(intPtr(0))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected artist search command")
+	}
+	if updated.app.SearchQuery != "Aster Lane" {
+		t.Fatal("expected artist name to become the active search query")
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if len(loader.queries) == 0 || loader.queries[0] != "Aster Lane" {
+		t.Fatal("expected loader search to receive the artist name")
+	}
+	if len(updated.app.CurrentTracks) != 1 {
+		t.Fatal("expected artist follow-up search results to load")
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mattn/go-runewidth"
 
 	"deezer-tui-go/internal/app"
 	"deezer-tui-go/internal/config"
@@ -31,9 +33,34 @@ type loadFailedMsg struct {
 	message string
 }
 
+type searchLoadedMsg struct {
+	query     string
+	tracks    []app.Track
+	playlists []app.Playlist
+	artists   []app.Artist
+}
+
 type playbackStartedMsg struct {
 	playID  int
 	session PlaybackSession
+}
+
+type playbackTrackChangedMsg struct {
+	playID    int
+	meta      deezer.TrackMetadata
+	quality   deezer.AudioQuality
+	initialMS uint64
+}
+
+type playbackProgressMsg struct {
+	playID    int
+	currentMS uint64
+	totalMS   uint64
+}
+
+type playbackErrorMsg struct {
+	playID int
+	err    error
 }
 
 type playbackFinishedMsg struct {
@@ -41,11 +68,17 @@ type playbackFinishedMsg struct {
 	err    error
 }
 
+type playbackTickMsg struct{}
+
 type Model struct {
 	app            *app.App
 	loader         Loader
 	runtime        PlayerRuntime
 	session        PlaybackSession
+	playbackEvents chan tea.Msg
+	progressBaseMS uint64
+	progressSince  time.Time
+	progressActive bool
 	width          int
 	height         int
 	nextPlaybackID int
@@ -73,9 +106,10 @@ func NewWithConfig(cfg config.Config) Model {
 
 	state.StatusMessage = status
 	return Model{
-		app:     state,
-		loader:  loader,
-		runtime: newPlayerRuntime(loader),
+		app:            state,
+		loader:         loader,
+		runtime:        newPlayerRuntime(loader),
+		playbackEvents: make(chan tea.Msg, 32),
 	}
 }
 
@@ -86,9 +120,10 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		state.StatusMessage = "No Deezer loader configured"
 	}
 	return Model{
-		app:     state,
-		loader:  loader,
-		runtime: newPlayerRuntime(loader),
+		app:            state,
+		loader:         loader,
+		runtime:        newPlayerRuntime(loader),
+		playbackEvents: make(chan tea.Msg, 32),
 	}
 }
 
@@ -145,6 +180,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadFailedMsg:
 		m.app.StatusMessage = msg.message
 		m.app.FlowLoadingMore = false
+		m.app.IsSearching = false
+		return m, nil
+	case searchLoadedMsg:
+		m.app.IsSearching = false
+		m.app.SearchQuery = msg.query
+		m.app.CurrentTracks = msg.tracks
+		m.app.SearchPlaylists = msg.playlists
+		m.app.SearchArtists = msg.artists
+		m.app.ShowingSearchResult = true
+		m.app.SearchCategory = app.SearchCategoryTracks
+		m.app.ActivePanel = app.ActivePanelMain
+		m.app.MainState.Select(intPtr(0))
+		m.app.CurrentPlaylistID = stringPtr("__search__")
+		m.app.StatusMessage = fmt.Sprintf("Search: %q", msg.query)
 		return m, nil
 	case playbackStartedMsg:
 		if msg.playID != m.nextPlaybackID {
@@ -155,13 +204,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentPlayID = msg.playID
 		m.session.SetVolume(float32(m.app.Volume) / 100)
 		m.app.IsPlaying = true
+		m.progressActive = false
+		m.progressBaseMS = 0
+		m.progressSince = time.Time{}
+		m.app.StatusMessage = "Buffering..."
+		return m, tea.Batch(
+			waitPlaybackCmd(msg.playID, msg.session),
+			listenPlaybackEventCmd(m.playbackEvents),
+		)
+	case playbackTrackChangedMsg:
+		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
+			return m, nil
+		}
+		totalMS := uint64(0)
+		if msg.meta.DurationSecs != nil {
+			totalMS = *msg.meta.DurationSecs * 1000
+		}
+		m.app.NowPlaying = &app.NowPlaying{
+			ID:          msg.meta.ID,
+			Title:       msg.meta.Title,
+			Artist:      msg.meta.Artist,
+			Quality:     configQualityFromDeezer(msg.quality),
+			CurrentMS:   msg.initialMS,
+			TotalMS:     totalMS,
+			AlbumArtURL: msg.meta.AlbumArtURL,
+		}
+		return m, listenPlaybackEventCmd(m.playbackEvents)
+	case playbackProgressMsg:
+		if msg.playID != m.currentPlayID || m.app.NowPlaying == nil {
+			return m, listenPlaybackEventCmd(m.playbackEvents)
+		}
+		m.app.NowPlaying.CurrentMS = msg.currentMS
+		if msg.totalMS > 0 {
+			m.app.NowPlaying.TotalMS = msg.totalMS
+		}
+		m.progressBaseMS = msg.currentMS
+		m.progressSince = time.Now()
+		m.progressActive = m.app.IsPlaying
 		m.app.StatusMessage = "Playing"
-		return m, waitPlaybackCmd(msg.playID, msg.session)
+		if m.progressActive {
+			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd())
+		}
+		return m, listenPlaybackEventCmd(m.playbackEvents)
+	case playbackErrorMsg:
+		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
+			return m, nil
+		}
+		m.app.StatusMessage = fmt.Sprintf("Playback runtime error: %v", msg.err)
+		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackFinishedMsg:
 		if msg.playID != m.currentPlayID {
 			return m, nil
 		}
 		m.session = nil
+		m.progressActive = false
+		m.progressSince = time.Time{}
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			m.app.IsPlaying = false
 			m.app.StatusMessage = fmt.Sprintf("Playback error: %v", msg.err)
@@ -171,10 +268,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.handlePlaybackFinished()
+	case playbackTickMsg:
+		if !m.progressActive || !m.app.IsPlaying || m.app.NowPlaying == nil {
+			return m, nil
+		}
+		elapsed := uint64(time.Since(m.progressSince).Milliseconds())
+		current := m.progressBaseMS + elapsed
+		if m.app.NowPlaying.TotalMS > 0 && current > m.app.NowPlaying.TotalMS {
+			current = m.app.NowPlaying.TotalMS
+		}
+		m.app.NowPlaying.CurrentMS = current
+		return m, playbackTickCmd()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyPressMsg:
+		if m.app.IsSearching {
+			return m, m.handleSearchInput(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			if m.session != nil {
@@ -197,11 +308,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.handleEnter()
 		case " ":
 			m.togglePlayPause()
+		case "n":
+			return m, m.handleNext()
 		case "p":
-			m.togglePlayPause()
+			return m, m.handlePrevious()
+		case "+":
+			m.adjustVolume(5)
+		case "-":
+			m.adjustVolume(-5)
 		case "/":
-			m.app.StatusMessage = "Search input not wired yet in Go shell"
+			m.app.IsSearching = true
+			m.app.SearchQuery = ""
 			m.app.ActivePanel = app.ActivePanelSearch
+			m.app.StatusMessage = "Search: type query and press Enter"
 		}
 	}
 
@@ -216,21 +335,22 @@ func (m Model) View() tea.View {
 		return view
 	}
 
-	header := "Deezer TUI Go Rewrite"
+	header := m.renderHeader()
+	searchBar := m.renderSearchBar()
+	contentHeight := max(14, m.height-9)
 	body := joinColumns(
-		m.renderNavigation(),
-		m.renderPlaylists(),
-		m.renderMain(),
-		m.renderPlayer(),
+		m.renderSidebar(contentHeight),
+		m.renderMain(contentHeight),
+		m.renderQueue(contentHeight),
 	)
-	footer := "Arrows/HJKL navigate | TAB switch focus | Enter select | P/Space play/pause | Q quit"
+	footer := m.renderPlaybar()
+	status := m.renderStatusLine()
 
 	content := strings.Join([]string{
 		header,
-		"",
+		searchBar,
 		body,
-		"",
-		"Status: " + m.app.StatusMessage,
+		status,
 		footer,
 	}, "\n")
 	view := tea.NewView(content)
@@ -278,6 +398,13 @@ func (m *Model) togglePlayPause() {
 		if m.session != nil {
 			m.session.Pause()
 		}
+		if m.progressActive && m.app.NowPlaying != nil {
+			elapsed := uint64(time.Since(m.progressSince).Milliseconds())
+			m.progressBaseMS += elapsed
+			m.app.NowPlaying.CurrentMS = m.progressBaseMS
+		}
+		m.progressActive = false
+		m.progressSince = time.Time{}
 		m.app.IsPlaying = false
 		m.app.StatusMessage = "Paused"
 		return
@@ -285,7 +412,14 @@ func (m *Model) togglePlayPause() {
 	if m.session != nil {
 		m.session.Resume()
 		m.app.IsPlaying = true
+		if m.app.NowPlaying != nil {
+			m.progressSince = time.Now()
+			m.progressActive = true
+		}
 		m.app.StatusMessage = "Playing"
+		if m.progressActive {
+			return
+		}
 		return
 	}
 	if len(m.app.QueueTracks) == 0 && len(m.app.CurrentTracks) > 0 {
@@ -295,8 +429,7 @@ func (m *Model) togglePlayPause() {
 		m.app.QueueState.Select(intPtr(0))
 	}
 	if len(m.app.QueueTracks) > 0 && m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
-		m.app.IsPlaying = true
-		m.app.StatusMessage = "Starting playback..."
+		return
 	}
 }
 
@@ -328,10 +461,26 @@ func (m *Model) handleEnter() tea.Cmd {
 		}
 		pl := m.app.Playlists[idx]
 		return loadPlaylistCmd(m.loader, pl.ID, pl.Title)
+	case app.ActivePanelQueue:
+		if len(m.app.QueueTracks) == 0 {
+			return nil
+		}
+		idx := derefOrZero(m.app.QueueState.Selected())
+		if idx < 0 || idx >= len(m.app.QueueTracks) {
+			return nil
+		}
+		m.app.QueueIndex = intPtr(idx)
+		m.app.QueueState.Select(intPtr(idx))
+		m.app.IsPlaying = true
+		m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", m.app.QueueTracks[idx].Title, m.app.QueueTracks[idx].Artist)
+		return m.startTrackPlayback(m.app.QueueTracks[idx].ID)
 	case app.ActivePanelMain:
 		if m.app.ViewingSettings {
 			m.app.StatusMessage = "Settings actions not wired yet"
 			return nil
+		}
+		if m.app.ShowingSearchResult {
+			return m.handleSearchResultEnter()
 		}
 		if len(m.app.CurrentTracks) == 0 {
 			return nil
@@ -363,6 +512,51 @@ func (m *Model) handleEnter() tea.Cmd {
 	return nil
 }
 
+func (m *Model) handleSearchResultEnter() tea.Cmd {
+	selected := derefOrZero(m.app.MainState.Selected())
+	switch m.app.SearchCategory {
+	case app.SearchCategoryTracks:
+		if len(m.app.CurrentTracks) == 0 {
+			return nil
+		}
+		if selected >= len(m.app.CurrentTracks) {
+			selected = len(m.app.CurrentTracks) - 1
+		}
+		track := m.app.CurrentTracks[selected]
+		m.app.QueueTracks = []app.Track{track}
+		m.app.Queue = formatQueue(m.app.QueueTracks)
+		m.app.QueueIndex = intPtr(0)
+		m.app.QueueState.Select(intPtr(0))
+		m.app.IsPlaying = true
+		m.app.IsFlowQueue = false
+		m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
+		return m.startTrackPlayback(track.ID)
+	case app.SearchCategoryPlaylists:
+		if len(m.app.SearchPlaylists) == 0 {
+			return nil
+		}
+		if selected >= len(m.app.SearchPlaylists) {
+			selected = len(m.app.SearchPlaylists) - 1
+		}
+		pl := m.app.SearchPlaylists[selected]
+		return loadPlaylistCmd(m.loader, pl.ID, pl.Title)
+	case app.SearchCategoryArtists:
+		if len(m.app.SearchArtists) == 0 {
+			return nil
+		}
+		if selected >= len(m.app.SearchArtists) {
+			selected = len(m.app.SearchArtists) - 1
+		}
+		artist := m.app.SearchArtists[selected]
+		m.app.IsSearching = true
+		m.app.SearchQuery = artist.Name
+		m.app.StatusMessage = fmt.Sprintf("Searching for %q...", artist.Name)
+		return searchCmd(m.loader, artist.Name)
+	default:
+		return nil
+	}
+}
+
 func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.CurrentPlaylistID = stringPtr(id)
 	m.app.CurrentTracks = append([]app.Track(nil), tracks...)
@@ -378,6 +572,81 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
 }
 
+func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.app.IsSearching = false
+		m.app.StatusMessage = "Search canceled"
+		return nil
+	case "enter":
+		query := strings.TrimSpace(m.app.SearchQuery)
+		if query == "" {
+			m.app.IsSearching = false
+			m.app.StatusMessage = "Search query is empty"
+			return nil
+		}
+		m.app.StatusMessage = fmt.Sprintf("Searching for %q...", query)
+		return searchCmd(m.loader, query)
+	case "backspace":
+		if len(m.app.SearchQuery) > 0 {
+			m.app.SearchQuery = m.app.SearchQuery[:len(m.app.SearchQuery)-1]
+		}
+		return nil
+	}
+	if len(msg.Text) > 0 {
+		m.app.SearchQuery += msg.Text
+	}
+	return nil
+}
+
+func (m *Model) handleNext() tea.Cmd {
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		return nil
+	}
+	current := *m.app.QueueIndex
+	if current+1 < len(m.app.QueueTracks) {
+		nextIndex := current + 1
+		m.app.QueueIndex = intPtr(nextIndex)
+		m.app.QueueState.Select(intPtr(nextIndex))
+		return m.startTrackPlayback(m.app.QueueTracks[nextIndex].ID)
+	}
+	if m.app.ShouldLoadMoreFlow() {
+		m.app.FlowLoadingMore = true
+		m.app.StatusMessage = "Loading more Flow..."
+		return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, true)
+	}
+	return nil
+}
+
+func (m *Model) handlePrevious() tea.Cmd {
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		return nil
+	}
+	current := *m.app.QueueIndex
+	if current == 0 {
+		return m.startTrackPlayback(m.app.QueueTracks[0].ID)
+	}
+	prevIndex := current - 1
+	m.app.QueueIndex = intPtr(prevIndex)
+	m.app.QueueState.Select(intPtr(prevIndex))
+	return m.startTrackPlayback(m.app.QueueTracks[prevIndex].ID)
+}
+
+func (m *Model) adjustVolume(delta int) {
+	next := int(m.app.Volume) + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > 100 {
+		next = 100
+	}
+	m.app.Volume = uint16(next)
+	if m.session != nil {
+		m.session.SetVolume(float32(m.app.Volume) / 100)
+	}
+	m.app.StatusMessage = fmt.Sprintf("Volume: %d%%", m.app.Volume)
+}
+
 func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	if strings.TrimSpace(trackID) == "" {
 		return nil
@@ -390,11 +659,14 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 		m.session.Stop()
 		m.session = nil
 	}
+	m.progressActive = false
+	m.progressBaseMS = 0
+	m.progressSince = time.Time{}
 	m.nextPlaybackID++
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
-	return startPlaybackCmd(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality))
+	return startPlaybackCmdWithEvents(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {
@@ -423,117 +695,218 @@ func (m *Model) handlePlaybackFinished() tea.Cmd {
 	return nil
 }
 
-func (m Model) renderNavigation() string {
+func (m Model) renderSidebar(height int) string {
+	nav := []string{"Browse"}
 	items := []string{"Home", "Flow", "Explore", "Favorites", "Settings"}
-	lines := make([]string, 0, len(items))
-	selected := derefOrZero(m.app.NavState.Selected())
+	selectedNav := derefOrZero(m.app.NavState.Selected())
 	for i, item := range items {
-		line := "  " + item
-		if i == selected {
-			line = "> " + item
+		prefix := "  "
+		if i == selectedNav && m.app.ActivePanel == app.ActivePanelNavigation {
+			prefix = "> "
 		}
-		lines = append(lines, line)
+		nav = append(nav, prefix+item)
 	}
-	return m.renderPanel("Navigation", strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelNavigation)
-}
-
-func (m Model) renderPlaylists() string {
-	lines := make([]string, 0, len(m.app.Playlists))
-	selected := derefOrZero(m.app.PlaylistState.Selected())
-	if len(m.app.Playlists) == 0 {
-		lines = append(lines, "No playlists")
-	} else {
-		for i, item := range m.app.Playlists {
-			line := "  " + item.Title
-			if i == selected {
-				line = "> " + item.Title
-			}
-			lines = append(lines, line)
+	nav = append(nav, "", "Library")
+	for i, pl := range m.app.Playlists {
+		prefix := "  "
+		if i == derefOrZero(m.app.PlaylistState.Selected()) && m.app.ActivePanel == app.ActivePanelPlaylists {
+			prefix = "> "
+		}
+		nav = append(nav, prefix+truncate(pl.Title, 20))
+		if i >= height-8 {
+			break
 		}
 	}
-	return m.renderPanel("Playlists", strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelPlaylists)
+	return m.renderPanel("Library", strings.Join(nav, "\n"), m.app.ActivePanel == app.ActivePanelNavigation || m.app.ActivePanel == app.ActivePanelPlaylists, min(m.width/4, 28), height)
 }
 
-func (m Model) renderMain() string {
+func (m Model) renderMain(height int) string {
 	var title string
 	switch {
 	case m.app.ViewingSettings:
 		title = "Settings"
 	case m.app.CurrentPlaylistID != nil:
-		title = *m.app.CurrentPlaylistID
+		title = displayCollectionTitle(*m.app.CurrentPlaylistID)
 	default:
-		title = "Main"
+		title = "Browse"
 	}
 
 	lines := []string{}
 	if m.app.ViewingSettings {
 		lines = append(lines,
-			"  Theme: SpotifyDark",
-			"  Quality: 320kbps",
-			"  Discord RPC: off",
-			"  Crossfade: off",
-			"  ARL: loaded from ~/.deezer-tui-config.json",
+			" Theme         SpotifyDark",
+			" Quality       320kbps",
+			" Discord RPC   off",
+			" Crossfade     off",
+			" Config        ~/.deezer-tui-config.json",
 		)
 	} else if len(m.app.CurrentTracks) == 0 {
-		lines = append(lines, "No tracks loaded")
+		lines = append(lines, "", " No tracks loaded")
 	} else {
-		selected := derefOrZero(m.app.MainState.Selected())
-		playAll := "  Play Collection"
-		if selected == 0 {
-			playAll = "> Play Collection"
+		if m.app.ShowingSearchResult {
+			lines = append(lines, renderSearchTabs(m.app.SearchCategory))
+			lines = append(lines, "")
 		}
-		lines = append(lines, playAll)
-		for i, track := range m.app.CurrentTracks {
-			label := fmt.Sprintf("  %s - %s", track.Title, track.Artist)
-			if selected == i+1 {
-				label = "> " + track.Title + " - " + track.Artist
+		selected := derefOrZero(m.app.MainState.Selected())
+		if m.app.ShowingSearchResult {
+			switch m.app.SearchCategory {
+			case app.SearchCategoryTracks:
+				lines = append(lines, " #  Title                               Artist")
+				lines = append(lines, " ----------------------------------------------------------")
+				for i, track := range m.app.CurrentTracks {
+					label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
+					if selected == i {
+						label = fmt.Sprintf(">%02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
+					}
+					lines = append(lines, label)
+				}
+			case app.SearchCategoryPlaylists:
+				lines = append(lines, " Playlist")
+				lines = append(lines, " ---------------------------------------")
+				for i, pl := range m.app.SearchPlaylists {
+					label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
+					if selected == i {
+						label = fmt.Sprintf(">%02d %s", i+1, truncate(pl.Title, 40))
+					}
+					lines = append(lines, label)
+				}
+			case app.SearchCategoryArtists:
+				lines = append(lines, " Artist")
+				lines = append(lines, " ---------------------------------------")
+				for i, artist := range m.app.SearchArtists {
+					label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
+					if selected == i {
+						label = fmt.Sprintf(">%02d %s", i+1, truncate(artist.Name, 40))
+					}
+					lines = append(lines, label)
+				}
 			}
-			lines = append(lines, label)
+		} else {
+			playAll := "  Play Collection"
+			if selected == 0 {
+				playAll = "> Play Collection"
+			}
+			lines = append(lines, playAll)
+			lines = append(lines, "")
+			lines = append(lines, " #  Title                               Artist")
+			lines = append(lines, " ----------------------------------------------------------")
+			for i, track := range m.app.CurrentTracks {
+				label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
+				if selected == i+1 {
+					label = fmt.Sprintf(">%02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
+				}
+				lines = append(lines, label)
+			}
 		}
 	}
 
-	return m.renderPanel(title, strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelMain || m.app.ActivePanel == app.ActivePanelSearch)
+	return m.renderPanel(title, strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelMain || m.app.ActivePanel == app.ActivePanelSearch, max(52, m.width/2), height)
 }
 
-func (m Model) renderPlayer() string {
+func (m Model) renderQueue(height int) string {
 	lines := []string{
-		fmt.Sprintf("State: %s", ternary(m.app.IsPlaying, "Playing", "Stopped")),
-		fmt.Sprintf("Volume: %d%%", m.app.Volume),
-		fmt.Sprintf("Repeat: %s", repeatModeLabel(m.app.RepeatMode)),
-		fmt.Sprintf("Flow Queue: %t", m.app.IsFlowQueue),
+		fmt.Sprintf(" State    %s", ternary(m.app.IsPlaying, "Playing", "Stopped")),
+		fmt.Sprintf(" Volume   %d%%", m.app.Volume),
+		fmt.Sprintf(" Repeat   %s", repeatModeLabel(m.app.RepeatMode)),
+		fmt.Sprintf(" Flow     %t", m.app.IsFlowQueue),
 	}
 
 	if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		track := m.app.QueueTracks[*m.app.QueueIndex]
-		lines = append(lines, "", track.Title, track.Artist)
+		lines = append(lines, "", " Now Playing", " "+truncate(track.Title, 24), " "+truncate(track.Artist, 24))
 	} else {
-		lines = append(lines, "", "Nothing queued")
+		lines = append(lines, "", " Nothing queued")
 	}
 
 	if len(m.app.Queue) > 0 {
-		lines = append(lines, "", "Queue:")
+		lines = append(lines, "", " Queue")
+		lines = append(lines, " ------------------------")
 		for i, item := range m.app.Queue {
-			line := "  " + item
-			if m.app.QueueIndex != nil && i == *m.app.QueueIndex {
-				line = "> " + item
+			line := fmt.Sprintf(" %02d %s", i+1, truncate(item, 22))
+			if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
+				line = fmt.Sprintf(">%02d %s", i+1, truncate(item, 22))
+			} else if m.app.QueueIndex != nil && i == *m.app.QueueIndex {
+				line = fmt.Sprintf("*%02d %s", i+1, truncate(item, 22))
 			}
 			lines = append(lines, line)
-			if i >= 5 {
+			if i >= height-10 {
 				break
 			}
 		}
 	}
 
-	return m.renderPanel("Player", strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelPlayer || m.app.ActivePanel == app.ActivePanelPlayerInfo || m.app.ActivePanel == app.ActivePanelPlayerProgress)
+	return m.renderPanel("Queue", strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelQueue || m.app.ActivePanel == app.ActivePanelPlayer || m.app.ActivePanel == app.ActivePanelPlayerInfo || m.app.ActivePanel == app.ActivePanelPlayerProgress, min(34, m.width/4), height)
 }
 
-func (m Model) renderPanel(title, body string, active bool) string {
-	marker := " "
-	if active {
-		marker = "*"
+func (m Model) renderSearchBar() string {
+	query := m.app.SearchQuery
+	if query == "" && m.app.IsSearching {
+		query = "_"
 	}
-	header := fmt.Sprintf("%s %s", marker, title)
-	return padBlock(header+"\n"+body, max0(m.width/4-2), 18)
+	label := " Search "
+	if m.app.IsSearching {
+		label = " Search Mode "
+	}
+	help := "tab switch | hjkl move | enter select | / search"
+	return renderLineBox(fmt.Sprintf("%s %s", label, query), help, m.width)
+}
+
+func (m Model) renderPlaybar() string {
+	track := "Nothing playing"
+	progress := "[--------------------] 00:00 / 00:00"
+	if m.app.NowPlaying != nil {
+		track = m.app.NowPlaying.Title + " - " + m.app.NowPlaying.Artist
+		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, 20)
+	} else if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
+		item := m.app.QueueTracks[*m.app.QueueIndex]
+		track = item.Title + " - " + item.Artist
+	}
+	state := ternary(m.app.IsPlaying, "Playing", "Paused")
+	left := fmt.Sprintf(" %s | %s", state, truncate(track, 42))
+	right := fmt.Sprintf("%s | vol %d%% | n/p next prev | +/- volume", progress, m.app.Volume)
+	return renderLineBox(left, right, m.width)
+}
+
+func (m Model) renderHeader() string {
+	left := " deezer-tui "
+	center := fmt.Sprintf(" %s ", displayCollectionTitle(derefString(m.app.CurrentPlaylistID, "Browse")))
+	right := fmt.Sprintf(" %s | q quit ", activePanelLabel(m.app.ActivePanel))
+	return renderTripleLine(left, center, right, m.width)
+}
+
+func (m Model) renderStatusLine() string {
+	return renderLineBox(" Status ", truncate(m.app.StatusMessage, max(20, m.width-18)), m.width)
+}
+
+func (m Model) renderPanel(title, body string, active bool, width, height int) string {
+	h := "─"
+	v := "│"
+	tl := "┌"
+	tr := "┐"
+	bl := "└"
+	br := "┘"
+	if active {
+		h = "═"
+		v = "║"
+		tl = "╔"
+		tr = "╗"
+		bl = "╚"
+		br = "╝"
+	}
+	innerWidth := max(12, width-2)
+	bodyHeight := max(6, height-2)
+	titleText := " " + truncate(title, max(1, innerWidth-2)) + " "
+	top := tl + titleText + strings.Repeat(h, max(0, innerWidth-textWidth(titleText))) + tr
+	lines := strings.Split(body, "\n")
+	for len(lines) < bodyHeight {
+		lines = append(lines, "")
+	}
+	framed := []string{top}
+	for i := 0; i < bodyHeight; i++ {
+		framed = append(framed, v+fitToWidth(lines[i], innerWidth)+v)
+	}
+	framed = append(framed, bl+strings.Repeat(h, innerWidth)+br)
+	return strings.Join(framed, "\n")
 }
 
 func bootstrapCmd(loader Loader) tea.Cmd {
@@ -549,12 +922,23 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
-func startPlaybackCmd(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality) tea.Cmd {
+func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, events chan tea.Msg) tea.Cmd {
 	if runtime == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		session, err := runtime.Start(trackID, quality, player.EventHandler{})
+		handler := player.EventHandler{
+			OnTrackChanged: func(meta deezer.TrackMetadata, q deezer.AudioQuality, initialMS uint64) {
+				events <- playbackTrackChangedMsg{playID: playID, meta: meta, quality: q, initialMS: initialMS}
+			},
+			OnPlaybackProgress: func(currentMS, totalMS uint64) {
+				events <- playbackProgressMsg{playID: playID, currentMS: currentMS, totalMS: totalMS}
+			},
+			OnError: func(err error) {
+				events <- playbackErrorMsg{playID: playID, err: err}
+			},
+		}
+		session, err := runtime.Start(trackID, quality, handler)
 		if err != nil {
 			return loadFailedMsg{message: fmt.Sprintf("Playback start error: %v", err)}
 		}
@@ -569,6 +953,21 @@ func waitPlaybackCmd(playID int, session PlaybackSession) tea.Cmd {
 	return func() tea.Msg {
 		return playbackFinishedMsg{playID: playID, err: session.Wait()}
 	}
+}
+
+func listenPlaybackEventCmd(events <-chan tea.Msg) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return <-events
+	}
+}
+
+func playbackTickCmd() tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return playbackTickMsg{}
+	})
 }
 
 func loadHomeCmd(loader Loader) tea.Cmd {
@@ -636,6 +1035,24 @@ func loadPlaylistCmd(loader Loader, id string, title string) tea.Cmd {
 	}
 }
 
+func searchCmd(loader Loader, query string) tea.Cmd {
+	if loader == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		results, err := loader.Search(context.Background(), query)
+		if err != nil {
+			return loadFailedMsg{message: fmt.Sprintf("Search error: %v", err)}
+		}
+		return searchLoadedMsg{
+			query:     query,
+			tracks:    results.Tracks,
+			playlists: results.Playlists,
+			artists:   results.Artists,
+		}
+	}
+}
+
 func repeatModeLabel(mode app.RepeatMode) string {
 	switch mode {
 	case app.RepeatModeAll:
@@ -658,6 +1075,17 @@ func qualityFromConfig(q config.AudioQuality) deezer.AudioQuality {
 	}
 }
 
+func configQualityFromDeezer(q deezer.AudioQuality) config.AudioQuality {
+	switch q {
+	case deezer.AudioQuality128:
+		return config.AudioQuality128
+	case deezer.AudioQualityFlac:
+		return config.AudioQualityFlac
+	default:
+		return config.AudioQuality320
+	}
+}
+
 func ternary[T any](cond bool, a, b T) T {
 	if cond {
 		return a
@@ -676,13 +1104,6 @@ func derefOrZero(v *int) int {
 	return *v
 }
 
-func max0(v int) int {
-	if v < 0 {
-		return 0
-	}
-	return v
-}
-
 func joinColumns(columns ...string) string {
 	split := make([][]string, len(columns))
 	maxLines := 0
@@ -694,8 +1115,8 @@ func joinColumns(columns ...string) string {
 			maxLines = len(lines)
 		}
 		for _, line := range lines {
-			if len(line) > widths[i] {
-				widths[i] = len(line)
+			if textWidth(line) > widths[i] {
+				widths[i] = textWidth(line)
 			}
 		}
 	}
@@ -723,20 +1144,136 @@ func formatQueue(tracks []app.Track) []string {
 	return queue
 }
 
-func padBlock(content string, width, height int) string {
-	lines := strings.Split(content, "\n")
-	for len(lines) < height {
-		lines = append(lines, "")
+func truncate(s string, width int) string {
+	if width <= 0 || textWidth(s) <= width {
+		return s
 	}
-	for i, line := range lines {
-		lines[i] = padRight(line, width)
+	if width <= 3 {
+		return runewidth.Truncate(s, width, "")
 	}
-	return strings.Join(lines[:height], "\n")
+	return runewidth.Truncate(s, width, "...")
+}
+
+func renderProgress(currentMS, totalMS uint64, width int) string {
+	if width < 4 {
+		width = 4
+	}
+	filled := 0
+	if totalMS > 0 {
+		filled = int((currentMS * uint64(width)) / totalMS)
+		if filled > width {
+			filled = width
+		}
+	}
+	bar := strings.Repeat("=", filled) + strings.Repeat("-", width-filled)
+	return fmt.Sprintf("[%s] %s / %s", bar, formatClock(currentMS), formatClock(totalMS))
+}
+
+func formatClock(ms uint64) string {
+	seconds := ms / 1000
+	return fmt.Sprintf("%02d:%02d", seconds/60, seconds%60)
+}
+
+func renderSearchTabs(category app.SearchCategory) string {
+	tabs := []struct {
+		label string
+		value app.SearchCategory
+	}{
+		{label: "Tracks", value: app.SearchCategoryTracks},
+		{label: "Playlists", value: app.SearchCategoryPlaylists},
+		{label: "Artists", value: app.SearchCategoryArtists},
+	}
+	parts := make([]string, 0, len(tabs))
+	for _, tab := range tabs {
+		label := " " + strings.ToUpper(tab.label) + " "
+		if tab.value == category {
+			label = "[" + strings.TrimSpace(label) + "]"
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func renderLineBox(left, right string, width int) string {
+	inner := max(10, width-2)
+	left = truncate(left, inner)
+	right = truncate(right, inner/2)
+	space := inner - textWidth(left) - textWidth(right)
+	if space < 1 {
+		right = ""
+		space = inner - textWidth(left)
+	}
+	return "┌" + strings.Repeat("─", inner) + "┐\n" +
+		"│" + fitToWidth(left+strings.Repeat(" ", max(0, space))+right, inner) + "│\n" +
+		"└" + strings.Repeat("─", inner) + "┘"
+}
+
+func renderTripleLine(left, center, right string, width int) string {
+	inner := max(10, width-2)
+	left = truncate(left, inner/3)
+	right = truncate(right, inner/3)
+	remaining := inner - textWidth(left) - textWidth(right)
+	center = truncate(center, remaining)
+	leftPad := max(0, (remaining-textWidth(center))/2)
+	rightPad := max(0, remaining-textWidth(center)-leftPad)
+	return "┌" + strings.Repeat("─", inner) + "┐\n" +
+		"│" + fitToWidth(left+strings.Repeat(" ", leftPad)+center+strings.Repeat(" ", rightPad)+right, inner) + "│\n" +
+		"└" + strings.Repeat("─", inner) + "┘"
+}
+
+func displayCollectionTitle(id string) string {
+	switch id {
+	case "__home__":
+		return "Home"
+	case "__flow__":
+		return "Flow"
+	case "__explore__":
+		return "Explore"
+	case "__favorites__":
+		return "Favorites"
+	case "__search__":
+		return "Search"
+	case "":
+		return "Browse"
+	default:
+		return id
+	}
+}
+
+func derefString(v *string, fallback string) string {
+	if v == nil {
+		return fallback
+	}
+	return *v
 }
 
 func padRight(s string, width int) string {
-	if len(s) >= width {
-		return s
+	return runewidth.FillRight(s, width)
+}
+
+func fitToWidth(s string, width int) string {
+	return padRight(truncate(s, width), width)
+}
+
+func textWidth(s string) int {
+	return runewidth.StringWidth(s)
+}
+
+func activePanelLabel(panel app.ActivePanel) string {
+	switch panel {
+	case app.ActivePanelNavigation:
+		return "nav"
+	case app.ActivePanelPlaylists:
+		return "playlists"
+	case app.ActivePanelSearch:
+		return "search"
+	case app.ActivePanelMain:
+		return "tracks"
+	case app.ActivePanelQueue:
+		return "queue"
+	case app.ActivePanelPlayer, app.ActivePanelPlayerInfo, app.ActivePanelPlayerProgress:
+		return "player"
+	default:
+		return "app"
 	}
-	return s + strings.Repeat(" ", width-len(s))
 }

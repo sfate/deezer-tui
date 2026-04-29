@@ -38,7 +38,7 @@ func NewBeepBackend() *BeepBackend {
 	}
 }
 
-func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, onNaturalStop func()) (Controller, error) {
+func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error) {
 	if err := b.ensureSpeaker(); err != nil {
 		return nil, err
 	}
@@ -56,10 +56,10 @@ func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, o
 	ctrl := &beep.Ctrl{Streamer: playback}
 	vol := &effects.Volume{Streamer: ctrl, Base: 2}
 	controller := &beepController{
-		ctrl:          ctrl,
-		volume:        vol,
-		closer:        streamer,
-		onNaturalStop: onNaturalStop,
+		ctrl:       ctrl,
+		volume:     vol,
+		closer:     streamer,
+		onFinished: onFinished,
 	}
 
 	controller.sequence = beep.Seq(vol, beep.Callback(func() {
@@ -88,12 +88,12 @@ func (b *BeepBackend) ensureSpeaker() error {
 }
 
 type beepController struct {
-	ctrl          *beep.Ctrl
-	volume        *effects.Volume
-	closer        io.Closer
-	sequence      beep.Streamer
-	onNaturalStop func()
-	finished      atomic.Bool
+	ctrl       *beep.Ctrl
+	volume     *effects.Volume
+	closer     io.Closer
+	sequence   beep.Streamer
+	onFinished func(error)
+	finished   atomic.Bool
 }
 
 func (c *beepController) Pause() {
@@ -147,8 +147,8 @@ func (c *beepController) finish(natural bool) {
 	if c.closer != nil {
 		_ = c.closer.Close()
 	}
-	if natural && c.onNaturalStop != nil {
-		c.onNaturalStop()
+	if natural && c.onFinished != nil {
+		c.onFinished(nil)
 	}
 }
 

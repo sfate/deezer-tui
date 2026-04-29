@@ -23,7 +23,7 @@ type MediaClient interface {
 }
 
 type Backend interface {
-	Start(stream io.ReadSeeker, quality deezer.AudioQuality, onNaturalStop func()) (Controller, error)
+	Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error)
 }
 
 type Controller interface {
@@ -199,18 +199,18 @@ func runTrackPipeline(
 	buffer := NewStreamBuffer(ch)
 
 	var started bool
-	naturalStopCh := make(chan struct{}, 1)
+	finishedCh := make(chan error, 1)
 	startBackend := func() error {
 		if started {
 			return nil
 		}
 		started = true
-		controller, err := backend.Start(buffer, quality, func() {
+		controller, err := backend.Start(buffer, quality, func(playErr error) {
 			select {
-			case naturalStopCh <- struct{}{}:
+			case finishedCh <- playErr:
 			default:
 			}
-			if handler.OnPlaybackStopped != nil {
+			if playErr == nil && handler.OnPlaybackStopped != nil {
 				handler.OnPlaybackStopped()
 			}
 		})
@@ -315,7 +315,10 @@ func runTrackPipeline(
 	close(ch)
 	if started {
 		select {
-		case <-naturalStopCh:
+		case playErr := <-finishedCh:
+			if playErr != nil {
+				return reportErr(handler, playErr)
+			}
 		case <-ctx.Done():
 			return ctx.Err()
 		}

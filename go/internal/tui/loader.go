@@ -21,6 +21,13 @@ type Loader interface {
 	LoadExplore(ctx context.Context) ([]app.Track, error)
 	LoadFavorites(ctx context.Context) ([]app.Track, error)
 	LoadPlaylist(ctx context.Context, playlistID string) ([]app.Track, error)
+	Search(ctx context.Context, query string) (SearchData, error)
+}
+
+type SearchData struct {
+	Tracks    []app.Track
+	Playlists []app.Playlist
+	Artists   []app.Artist
 }
 
 type DeezerLoader struct {
@@ -71,7 +78,23 @@ func (l *DeezerLoader) LoadPlaylist(ctx context.Context, playlistID string) ([]a
 	return mapTracks(tracks), err
 }
 
+func (l *DeezerLoader) Search(ctx context.Context, query string) (SearchData, error) {
+	results, err := l.client.FetchSearchResults(ctx, query)
+	if err != nil {
+		return SearchData{}, err
+	}
+	return SearchData{
+		Tracks:    mapTracks(results.Tracks),
+		Playlists: mapPlaylists(results.Playlists),
+		Artists:   mapArtists(results.Artists),
+	}, nil
+}
+
 func (l *DeezerLoader) MediaClient() player.MediaClient {
+	return l.client
+}
+
+func (l *DeezerLoader) DeezerClient() *deezer.Client {
 	return l.client
 }
 
@@ -93,6 +116,17 @@ func mapPlaylists(in []deezer.Playlist) []app.Playlist {
 		out = append(out, app.Playlist{
 			ID:    playlist.ID,
 			Title: playlist.Title,
+		})
+	}
+	return out
+}
+
+func mapArtists(in []deezer.Artist) []app.Artist {
+	out := make([]app.Artist, 0, len(in))
+	for _, artist := range in {
+		out = append(out, app.Artist{
+			ID:   artist.ID,
+			Name: artist.Name,
 		})
 	}
 	return out
