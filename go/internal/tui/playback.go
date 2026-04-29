@@ -17,6 +17,11 @@ type PlayerRuntime interface {
 	Start(trackID string, quality deezer.AudioQuality, handler player.EventHandler) (PlaybackSession, error)
 }
 
+type PrebufferingRuntime interface {
+	PlayerRuntime
+	Prebuffer(trackID string, quality deezer.AudioQuality)
+}
+
 type playbackCapableLoader interface {
 	Loader
 	MediaClient() player.MediaClient

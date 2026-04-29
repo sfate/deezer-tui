@@ -58,14 +58,19 @@ func (f *fakeLoader) Search(_ context.Context, query string) (SearchData, error)
 }
 
 type fakePlaybackRuntime struct {
-	started []string
-	session *fakePlaybackSession
+	started     []string
+	prebuffered []string
+	session     *fakePlaybackSession
 }
 
 func (f *fakePlaybackRuntime) Start(trackID string, _ deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
 	f.session = &fakePlaybackSession{}
 	return f.session, nil
+}
+
+func (f *fakePlaybackRuntime) Prebuffer(trackID string, _ deezer.AudioQuality) {
+	f.prebuffered = append(f.prebuffered, trackID)
 }
 
 type fakePlaybackSession struct {
@@ -360,6 +365,46 @@ func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
 	}
 	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
 		t.Fatal("expected queue index to advance")
+	}
+}
+
+func TestPlaybackProgressPrebuffersNextQueuedTrack(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 3
+	model.app.IsPlaying = true
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+		{ID: "3", Title: "Three", Artist: "C"},
+	}
+	model.app.QueueIndex = intPtr(0)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A"}
+
+	nextModel, _ := model.Update(playbackProgressMsg{playID: 3, currentMS: 0, totalMS: 180000})
+	updated := nextModel.(Model)
+	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "2" {
+		t.Fatalf("expected next queued track to be prebuffered, got %#v", runtime.prebuffered)
+	}
+	if updated.app.StatusMessage != "Playing" {
+		t.Fatalf("expected playing status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestPlaybackProgressClearsPrebufferAtQueueEnd(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 4
+	model.app.IsPlaying = true
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+	}
+	model.app.QueueIndex = intPtr(0)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A"}
+
+	_, _ = model.Update(playbackProgressMsg{playID: 4, currentMS: 0, totalMS: 180000})
+	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "" {
+		t.Fatalf("expected prebuffer clear at queue end, got %#v", runtime.prebuffered)
 	}
 }
 

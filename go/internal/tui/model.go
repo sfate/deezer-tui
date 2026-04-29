@@ -270,6 +270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
 		m.app.StatusMessage = "Playing"
+		m.maybePrebufferNextTrack()
 		if m.progressActive {
 			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd())
 		}
@@ -737,6 +738,26 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
 	return startPlaybackCmdWithEvents(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
+}
+
+func (m *Model) maybePrebufferNextTrack() {
+	runtime, ok := m.runtime.(PrebufferingRuntime)
+	if !ok {
+		return
+	}
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
+		return
+	}
+
+	nextIndex := *m.app.QueueIndex + 1
+	if nextIndex < 0 || nextIndex >= len(m.app.QueueTracks) {
+		runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
+		return
+	}
+
+	nextTrack := m.app.QueueTracks[nextIndex]
+	runtime.Prebuffer(nextTrack.ID, qualityFromConfig(m.app.Config.DefaultQuality))
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {

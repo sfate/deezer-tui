@@ -49,6 +49,8 @@ Build the Go binary from the repository root:
 make build
 ```
 
+On macOS, `make build` also precompiles the native playback helper used for real pause/resume, so the first track does not have to compile it at runtime.
+
 This produces:
 
 ```bash

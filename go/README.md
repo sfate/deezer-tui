@@ -33,6 +33,8 @@ make build
 ./target/release/deezer-tui
 ```
 
+On macOS, `make build` also precompiles the native playback helper into the user cache so the first playback does not pay that compile cost.
+
 The Go app loads the same config file as the Rust app:
 
 ```bash
