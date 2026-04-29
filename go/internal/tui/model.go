@@ -973,6 +973,7 @@ func (m Model) renderStatusLine() string {
 		art = strings.Join(make([]string, 7), "\n")
 	}
 	body := joinColumns(
+		" ",
 		m.renderArtworkSlot(art, 16, 9),
 		m.renderTextSlot(strings.Join(lines, "\n"), max(24, m.width-24), 9, 1, 1),
 	)

@@ -4,15 +4,21 @@ package tui
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"sync"
-	"syscall"
 
 	"deezer-tui-go/internal/deezer"
 	"deezer-tui-go/internal/player"
 )
+
+//go:embed mac_player_helper.swift
+var macPlayerHelperSource string
 
 type defaultPlayerRuntime struct {
 	client *deezer.Client
@@ -41,6 +47,7 @@ func (r *defaultPlayerRuntime) Start(trackID string, quality deezer.AudioQuality
 type darwinPlaybackSession struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
+	stdin   io.WriteCloser
 	file    string
 	paused  bool
 	stopped bool
@@ -108,8 +115,21 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, trackID string, quali
 	}
 
 	s.mu.Lock()
-	cmd := exec.Command("/usr/bin/afplay", "-v", fmt.Sprintf("%.2f", s.volume), s.file)
+	helperPath, err := ensureMacPlayerHelper()
+	if err != nil {
+		s.mu.Unlock()
+		s.done <- err
+		return
+	}
+	cmd := exec.Command(helperPath, s.file, fmt.Sprintf("%.4f", s.volume))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		s.mu.Unlock()
+		s.done <- err
+		return
+	}
 	s.cmd = cmd
+	s.stdin = stdin
 	paused := s.paused
 	stopped := s.stopped
 	s.mu.Unlock()
@@ -123,8 +143,8 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, trackID string, quali
 		s.done <- err
 		return
 	}
-	if paused && cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGSTOP)
+	if paused {
+		s.sendCommand("pause")
 	}
 
 	if handler.OnPlaybackProgress != nil {
@@ -160,24 +180,21 @@ func (s *darwinPlaybackSession) Pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = true
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Signal(syscall.SIGSTOP)
-	}
+	s.sendCommandLocked("pause")
 }
 
 func (s *darwinPlaybackSession) Resume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = false
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Signal(syscall.SIGCONT)
-	}
+	s.sendCommandLocked("resume")
 }
 
 func (s *darwinPlaybackSession) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	s.sendCommandLocked("stop")
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
@@ -197,6 +214,7 @@ func (s *darwinPlaybackSession) SetVolume(v float32) {
 		v = 1
 	}
 	s.volume = v
+	s.sendCommandLocked("volume " + strconv.FormatFloat(float64(v), 'f', 4, 32))
 }
 
 func qualityExtension(quality deezer.AudioQuality) string {
@@ -206,4 +224,54 @@ func qualityExtension(quality deezer.AudioQuality) string {
 	default:
 		return ".mp3"
 	}
+}
+
+func (s *darwinPlaybackSession) sendCommand(cmd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendCommandLocked(cmd)
+}
+
+func (s *darwinPlaybackSession) sendCommandLocked(cmd string) {
+	if s.stdin == nil {
+		return
+	}
+	_, _ = io.WriteString(s.stdin, cmd+"\n")
+}
+
+var (
+	macHelperOnce sync.Once
+	macHelperPath string
+	macHelperErr  error
+)
+
+func ensureMacPlayerHelper() (string, error) {
+	macHelperOnce.Do(func() {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			macHelperErr = err
+			return
+		}
+		dir := filepath.Join(cacheDir, "deezer-tui-go")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			macHelperErr = err
+			return
+		}
+		srcPath := filepath.Join(dir, "mac_player_helper.swift")
+		binPath := filepath.Join(dir, "mac-player-helper")
+		if err := os.WriteFile(srcPath, []byte(macPlayerHelperSource), 0o644); err != nil {
+			macHelperErr = err
+			return
+		}
+		cmd := exec.Command("/usr/bin/xcrun", "swiftc", "-O", "-o", binPath, srcPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			macHelperErr = fmt.Errorf("compile mac player helper: %w: %s", err, string(output))
+			return
+		}
+		macHelperPath = binPath
+	})
+	if macHelperErr != nil {
+		return "", macHelperErr
+	}
+	return macHelperPath, nil
 }
