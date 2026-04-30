@@ -73,7 +73,7 @@ func renderArtworkANSI(img image.Image, width, height int) string {
 			}
 			line.WriteString(colorUpperHalfBlock(top, bottom))
 		}
-		line.WriteString("\x1b[0m")
+		line.WriteString(baseBackgroundReset())
 		rows = append(rows, line.String())
 	}
 	return strings.Join(rows, "\n")

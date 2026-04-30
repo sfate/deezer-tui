@@ -16,6 +16,23 @@ import (
 	"deezer-tui-go/internal/player"
 )
 
+const (
+	gruvboxBgHard = "#100c18"
+	gruvboxBg0    = "#15111f"
+	gruvboxBg1    = "#1c1629"
+	gruvboxBg3    = "#3d314a"
+	gruvboxFg0    = "#e4d4de"
+	gruvboxFg1    = "#c8b3bf"
+	gruvboxFg4    = "#8f7383"
+	gruvboxYellow = "#f3c969"
+	gruvboxBlue   = "#8f7383"
+	gruvboxAqua   = "#21c7d9"
+	gruvboxGreen  = "#21c7d9"
+	gruvboxOrange = "#e07a87"
+	gruvboxRed    = "#e06c75"
+	gruvboxPurple = "#b18bb8"
+)
+
 type bootstrapLoadedMsg struct {
 	playlists []app.Playlist
 }
@@ -389,6 +406,7 @@ func (m Model) View() tea.View {
 		status,
 		footer,
 	}, "\n")
+	content = fillBackground(content, m.width)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.WindowTitle = "deezer-tui-go"
@@ -787,23 +805,17 @@ func (m *Model) handlePlaybackFinished() tea.Cmd {
 }
 
 func (m Model) renderSidebar(height int) string {
-	nav := []string{"Browse"}
+	nav := []string{sectionHeading("Browse", gruvboxBlue)}
 	items := []string{"Home", "Flow", "Explore", "Favorites", "Settings"}
 	selectedNav := derefOrZero(m.app.NavState.Selected())
 	for i, item := range items {
-		prefix := "  "
-		if i == selectedNav && m.app.ActivePanel == app.ActivePanelNavigation {
-			prefix = "> "
-		}
-		nav = append(nav, prefix+item)
+		selected := i == selectedNav && m.app.ActivePanel == app.ActivePanelNavigation
+		nav = append(nav, listRow(item, selected, gruvboxBlue))
 	}
-	nav = append(nav, "", "Library")
+	nav = append(nav, "", sectionHeading("Library", gruvboxPurple))
 	for i, pl := range m.app.Playlists {
-		prefix := "  "
-		if i == derefOrZero(m.app.PlaylistState.Selected()) && m.app.ActivePanel == app.ActivePanelPlaylists {
-			prefix = "> "
-		}
-		nav = append(nav, prefix+truncate(pl.Title, 20))
+		selected := i == derefOrZero(m.app.PlaylistState.Selected()) && m.app.ActivePanel == app.ActivePanelPlaylists
+		nav = append(nav, listRow(truncate(pl.Title, 20), selected, gruvboxPurple))
 		if i >= height-8 {
 			break
 		}
@@ -825,14 +837,14 @@ func (m Model) renderMain(height int) string {
 	lines := []string{}
 	if m.app.ViewingSettings {
 		lines = append(lines,
-			" Theme         SpotifyDark",
-			" Quality       320kbps",
-			" Discord RPC   off",
-			" Crossfade     off",
-			" Config        ~/.deezer-tui-config.json",
+			kvLine("Theme", "SpotifyDark", gruvboxPurple),
+			kvLine("Quality", "320kbps", gruvboxAqua),
+			kvLine("Discord RPC", "off", gruvboxOrange),
+			kvLine("Crossfade", "off", gruvboxOrange),
+			kvLine("Config", "~/.deezer-tui-config.json", gruvboxFg4),
 		)
 	} else if len(m.app.CurrentTracks) == 0 {
-		lines = append(lines, "", " No tracks loaded")
+		lines = append(lines, "", paint(" No tracks loaded", gruvboxFg4, ""))
 	} else {
 		if m.app.ShowingSearchResult {
 			lines = append(lines, renderSearchTabs(m.app.SearchCategory))
@@ -842,51 +854,36 @@ func (m Model) renderMain(height int) string {
 		if m.app.ShowingSearchResult {
 			switch m.app.SearchCategory {
 			case app.SearchCategoryTracks:
-				lines = append(lines, " #  Title                               Artist")
-				lines = append(lines, " ----------------------------------------------------------")
+				lines = append(lines, tableHeader(" #  Title                               Artist", gruvboxOrange))
+				lines = append(lines, separatorLine(58, gruvboxBg3))
 				for i, track := range m.app.CurrentTracks {
 					label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-					if selected == i {
-						label = fmt.Sprintf(">%02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-					}
-					lines = append(lines, label)
+					lines = append(lines, trackRow(label, selected == i, gruvboxAqua))
 				}
 			case app.SearchCategoryPlaylists:
-				lines = append(lines, " Playlist")
-				lines = append(lines, " ---------------------------------------")
+				lines = append(lines, tableHeader(" Playlist", gruvboxOrange))
+				lines = append(lines, separatorLine(41, gruvboxBg3))
 				for i, pl := range m.app.SearchPlaylists {
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
-					if selected == i {
-						label = fmt.Sprintf(">%02d %s", i+1, truncate(pl.Title, 40))
-					}
-					lines = append(lines, label)
+					lines = append(lines, trackRow(label, selected == i, gruvboxPurple))
 				}
 			case app.SearchCategoryArtists:
-				lines = append(lines, " Artist")
-				lines = append(lines, " ---------------------------------------")
+				lines = append(lines, tableHeader(" Artist", gruvboxOrange))
+				lines = append(lines, separatorLine(41, gruvboxBg3))
 				for i, artist := range m.app.SearchArtists {
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
-					if selected == i {
-						label = fmt.Sprintf(">%02d %s", i+1, truncate(artist.Name, 40))
-					}
-					lines = append(lines, label)
+					lines = append(lines, trackRow(label, selected == i, gruvboxGreen))
 				}
 			}
 		} else {
-			playAll := "  Play Collection"
-			if selected == 0 {
-				playAll = "> Play Collection"
-			}
+			playAll := trackRow(" Play Collection", selected == 0, gruvboxYellow)
 			lines = append(lines, playAll)
 			lines = append(lines, "")
-			lines = append(lines, " #  Title                               Artist")
-			lines = append(lines, " ----------------------------------------------------------")
+			lines = append(lines, tableHeader(" #  Title                               Artist", gruvboxOrange))
+			lines = append(lines, separatorLine(58, gruvboxBg3))
 			for i, track := range m.app.CurrentTracks {
 				label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-				if selected == i+1 {
-					label = fmt.Sprintf(">%02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-				}
-				lines = append(lines, label)
+				lines = append(lines, trackRow(label, selected == i+1, gruvboxAqua))
 			}
 		}
 	}
@@ -896,28 +893,30 @@ func (m Model) renderMain(height int) string {
 
 func (m Model) renderQueue(height int) string {
 	lines := []string{
-		fmt.Sprintf(" State    %s", ternary(m.app.IsPlaying, "Playing", "Stopped")),
-		fmt.Sprintf(" Volume   %d%%", m.app.Volume),
-		fmt.Sprintf(" Repeat   %s", repeatModeLabel(m.app.RepeatMode)),
-		fmt.Sprintf(" Flow     %t", m.app.IsFlowQueue),
+		kvLine("State", ternary(m.app.IsPlaying, "Playing", "Stopped"), gruvboxGreen),
+		kvLine("Volume", fmt.Sprintf("%d%%", m.app.Volume), gruvboxAqua),
+		kvLine("Repeat", repeatModeLabel(m.app.RepeatMode), gruvboxOrange),
+		kvLine("Flow", fmt.Sprintf("%t", m.app.IsFlowQueue), gruvboxPurple),
 	}
 
 	if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		track := m.app.QueueTracks[*m.app.QueueIndex]
-		lines = append(lines, "", " Now Playing", " "+truncate(track.Title, 24), " "+truncate(track.Artist, 24))
+		lines = append(lines, "", sectionHeading("Now Playing", gruvboxYellow), paint(" "+truncate(track.Title, 24), gruvboxFg0, ""), paint(" "+truncate(track.Artist, 24), gruvboxFg4, ""))
 	} else {
-		lines = append(lines, "", " Nothing queued")
+		lines = append(lines, "", paint(" Nothing queued", gruvboxFg4, ""))
 	}
 
 	if len(m.app.Queue) > 0 {
-		lines = append(lines, "", " Queue")
-		lines = append(lines, " ------------------------")
+		lines = append(lines, "", sectionHeading("Queue", gruvboxOrange))
+		lines = append(lines, separatorLine(24, gruvboxBg3))
 		for i, item := range m.app.Queue {
 			line := fmt.Sprintf(" %02d %s", i+1, truncate(item, 22))
 			if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
-				line = fmt.Sprintf(">%02d %s", i+1, truncate(item, 22))
+				line = trackRow(line, true, gruvboxOrange)
 			} else if m.app.QueueIndex != nil && i == *m.app.QueueIndex {
-				line = fmt.Sprintf("*%02d %s", i+1, truncate(item, 22))
+				line = paint("▶"+line[1:], gruvboxBgHard, gruvboxAqua)
+			} else {
+				line = paint(line, gruvboxFg1, "")
 			}
 			lines = append(lines, line)
 			if i >= height-10 {
@@ -932,19 +931,26 @@ func (m Model) renderQueue(height int) string {
 func (m Model) renderSearchBar() string {
 	query := m.app.SearchQuery
 	if query == "" && m.app.IsSearching {
-		query = "_"
+		query = paint("_", gruvboxAqua, "")
 	}
-	label := " Search "
+	label := paint(" Search ", gruvboxFg4, "")
 	if m.app.IsSearching {
-		label = " Search Mode "
+		label = paint(" Search ", gruvboxOrange, "")
 	}
-	help := "tab switch | hjkl move | enter select | space play/pause | / search"
+	help := paint("tab switch | hjkl move | enter select | space play/pause | / search", gruvboxFg4, "")
 	return renderLineBox(fmt.Sprintf("%s %s", label, query), help, m.width)
 }
 
 func (m Model) renderPlaybar() string {
-	left := " space play/pause | n/p next prev | +/- volume "
-	right := fmt.Sprintf("vol %d%% | %s", m.app.Volume, ternary(m.app.IsPlaying, "playing", "paused"))
+	left := paint(" space play/pause | n/p next prev | +/- volume ", gruvboxFg1, "")
+	stateColor := gruvboxFg4
+	if m.app.IsPlaying {
+		stateColor = gruvboxOrange
+	}
+	right := fmt.Sprintf("%s | %s",
+		paint(fmt.Sprintf("vol %d%%", m.app.Volume), gruvboxAqua, ""),
+		paint(ternary(m.app.IsPlaying, "playing", "paused"), stateColor, ""),
+	)
 	return renderLineBox(left, right, m.width)
 }
 
@@ -980,14 +986,14 @@ func (m Model) renderStatusLine() string {
 		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
 	}
 	lines := []string{
-		" State:       " + m.displayState(),
-		" Track:       " + title,
-		" Artist:      " + artist,
-		" Progress:    " + progress,
-		" Elapsed:     " + elapsed + " / " + total,
-		" Quality:     " + quality,
-		" Source:      " + source,
-		" Queue:       " + queueInfo,
+		kvLine("State", m.displayState(), gruvboxGreen),
+		kvLine("Track", title, gruvboxYellow),
+		kvLine("Artist", artist, gruvboxAqua),
+		kvLine("Progress", progress, gruvboxFg1),
+		kvLine("Elapsed", elapsed+" / "+total, gruvboxOrange),
+		kvLine("Quality", quality, gruvboxPurple),
+		kvLine("Source", source, gruvboxBlue),
+		kvLine("Queue", queueInfo, gruvboxFg4),
 	}
 	art := m.artworkANSI
 	if art == "" {
@@ -1019,16 +1025,35 @@ func (m Model) renderPanel(title, body string, active bool, width, height int) s
 	innerWidth := max(12, width-2)
 	bodyHeight := max(1, height-2)
 	titleText := " " + truncate(title, max(1, innerWidth-2)) + " "
-	top := tl + titleText + strings.Repeat(h, max(0, innerWidth-textWidth(titleText))) + tr
+	borderFG := gruvboxBg3
+	titleFG := gruvboxFg4
+	titleBG := gruvboxBg0
+	panelBG := gruvboxBg0
+	contentFG := gruvboxFg1
+	if active {
+		borderFG = gruvboxBg3
+		titleFG = gruvboxOrange
+		titleBG = gruvboxBg0
+		panelBG = gruvboxBg0
+		contentFG = gruvboxFg0
+	}
+	top := paint(tl, borderFG, panelBG) +
+		paint(titleText, titleFG, titleBG) +
+		paint(strings.Repeat(h, max(0, innerWidth-textWidth(titleText))), borderFG, panelBG) +
+		paint(tr, borderFG, panelBG)
 	lines := strings.Split(body, "\n")
 	for len(lines) < bodyHeight {
 		lines = append(lines, "")
 	}
 	framed := []string{top}
 	for i := 0; i < bodyHeight; i++ {
-		framed = append(framed, v+fitToWidth(lines[i], innerWidth)+v)
+		framed = append(framed,
+			paint(v, borderFG, panelBG)+
+				paint(fitToWidth(lines[i], innerWidth), contentFG, panelBG)+
+				paint(v, borderFG, panelBG),
+		)
 	}
-	framed = append(framed, bl+strings.Repeat(h, innerWidth)+br)
+	framed = append(framed, paint(bl+strings.Repeat(h, innerWidth)+br, borderFG, panelBG))
 	return strings.Join(framed, "\n")
 }
 
@@ -1337,8 +1362,10 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 			filled = width
 		}
 	}
-	bar := strings.Repeat("=", filled) + strings.Repeat("-", width-filled)
-	return fmt.Sprintf("[%s] %s / %s", bar, formatClock(currentMS), formatClock(totalMS))
+	filledBar := paint(strings.Repeat("━", filled), gruvboxOrange, "")
+	emptyBar := paint(strings.Repeat("-", width-filled), gruvboxBg3, "")
+	timing := paint(fmt.Sprintf("%s / %s", formatClock(currentMS), formatClock(totalMS)), gruvboxFg4, "")
+	return fmt.Sprintf("[%s%s] %s", filledBar, emptyBar, timing)
 }
 
 func formatClock(ms uint64) string {
@@ -1359,7 +1386,9 @@ func renderSearchTabs(category app.SearchCategory) string {
 	for _, tab := range tabs {
 		label := " " + strings.ToUpper(tab.label) + " "
 		if tab.value == category {
-			label = "[" + strings.TrimSpace(label) + "]"
+			label = paint(strings.TrimSpace(label), gruvboxOrange, "")
+		} else {
+			label = paint(label, gruvboxFg4, "")
 		}
 		parts = append(parts, label)
 	}
@@ -1375,9 +1404,12 @@ func renderLineBox(left, right string, width int) string {
 		right = ""
 		space = inner - textWidth(left)
 	}
-	return "┌" + strings.Repeat("─", inner) + "┐\n" +
-		"│" + fitToWidth(left+strings.Repeat(" ", max(0, space))+right, inner) + "│\n" +
-		"└" + strings.Repeat("─", inner) + "┘"
+	border := paint("┌"+strings.Repeat("─", inner)+"┐", gruvboxBg3, gruvboxBg0)
+	content := paint("│", gruvboxBg3, gruvboxBg0) +
+		paint(fitToWidth(left+strings.Repeat(" ", max(0, space))+right, inner), gruvboxFg1, gruvboxBg0) +
+		paint("│", gruvboxBg3, gruvboxBg0)
+	bottom := paint("└"+strings.Repeat("─", inner)+"┘", gruvboxBg3, gruvboxBg0)
+	return border + "\n" + content + "\n" + bottom
 }
 
 func renderTripleLine(left, center, right string, width int) string {
@@ -1388,9 +1420,19 @@ func renderTripleLine(left, center, right string, width int) string {
 	center = truncate(center, remaining)
 	leftPad := max(0, (remaining-textWidth(center))/2)
 	rightPad := max(0, remaining-textWidth(center)-leftPad)
-	return "┌" + strings.Repeat("─", inner) + "┐\n" +
-		"│" + fitToWidth(left+strings.Repeat(" ", leftPad)+center+strings.Repeat(" ", rightPad)+right, inner) + "│\n" +
-		"└" + strings.Repeat("─", inner) + "┘"
+	top := paint("┌"+strings.Repeat("─", inner)+"┐", gruvboxBg3, gruvboxBg0)
+	content := paint("│", gruvboxBg3, gruvboxBg0) +
+		paint(fitToWidth(
+			paint(left, gruvboxOrange, "")+
+				strings.Repeat(" ", leftPad)+
+				paint(center, gruvboxFg4, "")+
+				strings.Repeat(" ", rightPad)+
+				paint(right, gruvboxFg4, ""),
+			inner,
+		), gruvboxFg1, gruvboxBg0) +
+		paint("│", gruvboxBg3, gruvboxBg0)
+	bottom := paint("└"+strings.Repeat("─", inner)+"┘", gruvboxBg3, gruvboxBg0)
+	return top + "\n" + content + "\n" + bottom
 }
 
 func displayCollectionTitle(id string) string {
@@ -1430,6 +1472,14 @@ func fitToWidth(s string, width int) string {
 	return padRight(truncate(s, width), width)
 }
 
+func fillBackground(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = paint(fitToWidth(line, width), "", gruvboxBg0)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func textWidth(s string) int {
 	return cellansi.StringWidth(s)
 }
@@ -1462,6 +1512,88 @@ func qualityLabel(q config.AudioQuality) string {
 	default:
 		return "320 kbps"
 	}
+}
+
+func sectionHeading(text, color string) string {
+	return paint(" "+text, color, "")
+}
+
+func tableHeader(text, color string) string {
+	return paint(text, color, "")
+}
+
+func separatorLine(width int, color string) string {
+	return paint(" "+strings.Repeat("─", max(0, width-1)), color, "")
+}
+
+func kvLine(label, value, valueColor string) string {
+	return paint(fmt.Sprintf(" %-10s ", label+":"), gruvboxFg4, "") + paint(value, valueColor, "")
+}
+
+func listRow(text string, selected bool, accent string) string {
+	if selected {
+		return paint("> ", accent, "") + paint(text, gruvboxFg0, "")
+	}
+	return paint("  ", accent, "") + paint(text, gruvboxFg1, "")
+}
+
+func trackRow(text string, selected bool, accent string) string {
+	if selected {
+		return paint("> ", accent, "") + paint(strings.TrimLeft(text, " "), gruvboxFg0, "")
+	}
+	return "  " + paint(strings.TrimLeft(text, " "), gruvboxFg1, "")
+}
+
+func paint(text, fg, bg string) string {
+	if text == "" {
+		return ""
+	}
+	var parts []string
+	var resets []string
+	if fg != "" {
+		parts = append(parts, hexToANSI(fg, 38))
+		resets = append(resets, "39")
+	}
+	if bg != "" {
+		parts = append(parts, hexToANSI(bg, 48))
+		resets = append(resets, "49")
+	}
+	if len(parts) == 0 {
+		return text
+	}
+	resetBG := bg
+	if resetBG == "" {
+		resetBG = gruvboxBg0
+	}
+	reset := append([]string{"39", hexToANSI(resetBG, 48)}, resetsWithoutColorReset(resets)...)
+	return "\x1b[" + strings.Join(parts, ";") + "m" + text + "\x1b[" + strings.Join(reset, ";") + "m"
+}
+
+func baseBackgroundReset() string {
+	return "\x1b[39;" + hexToANSI(gruvboxBg0, 48) + "m"
+}
+
+func resetsWithoutColorReset(resets []string) []string {
+	filtered := make([]string, 0, len(resets))
+	for _, reset := range resets {
+		if reset == "39" || reset == "49" {
+			continue
+		}
+		filtered = append(filtered, reset)
+	}
+	return filtered
+}
+
+func hexToANSI(hex string, mode int) string {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return ""
+	}
+	var r, g, b uint8
+	if _, err := fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d;2;%d;%d;%d", mode, r, g, b)
 }
 
 func (m Model) displayState() string {
