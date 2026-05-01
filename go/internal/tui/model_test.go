@@ -497,6 +497,83 @@ func TestBufferingProgressKeepsListeningForTrackChanged(t *testing.T) {
 	}
 }
 
+func TestLateBufferingProgressDoesNotOverridePlayingState(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.currentPlayID = 7
+	model.app.IsPlaying = true
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "Song", Artist: "Artist"}
+
+	nextModel, _ := model.Update(playbackProgressMsg{playID: 7, currentMS: 1000, totalMS: 180000})
+	updated := nextModel.(Model)
+	if got := updated.displayState(); got != "Playing" {
+		t.Fatalf("expected playing state after playback progress, got %q", got)
+	}
+
+	nextModel, cmd := updated.Update(bufferingProgressMsg{playID: 7, percent: 100})
+	updated = nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected late buffering event to keep listening")
+	}
+	if got := updated.displayState(); got != "Playing" {
+		t.Fatalf("expected late buffering progress not to override playing state, got %q", got)
+	}
+	if updated.bufferingPercent != nil {
+		t.Fatal("expected late buffering percentage to be ignored after playback starts")
+	}
+}
+
+func TestTrackChangedStartsPlayingStateBeforeProgressEvent(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.currentPlayID = 7
+	model.app.IsPlaying = true
+
+	nextModel, cmd := model.Update(playbackTrackChangedMsg{
+		playID:    7,
+		meta:      deezer.TrackMetadata{ID: "1", Title: "Song", Artist: "Artist"},
+		quality:   deezer.AudioQuality320,
+		initialMS: 0,
+	})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected follow-up playback listener/tick command")
+	}
+	if got := updated.displayState(); got != "Playing" {
+		t.Fatalf("expected track changed to switch state to playing, got %q", got)
+	}
+	if !updated.progressActive {
+		t.Fatal("expected local progress ticking after track changed")
+	}
+
+	nextModel, _ = updated.Update(bufferingProgressMsg{playID: 7, percent: 100})
+	updated = nextModel.(Model)
+	if got := updated.displayState(); got != "Playing" {
+		t.Fatalf("expected late buffering not to override track changed state, got %q", got)
+	}
+}
+
+func TestStalePlaybackEventsKeepListenerAlive(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.currentPlayID = 2
+	model.nextPlaybackID = 2
+	model.playbackEvents <- playbackTrackChangedMsg{
+		playID:  2,
+		meta:    deezer.TrackMetadata{ID: "2", Title: "Current Song", Artist: "Artist"},
+		quality: deezer.AudioQuality320,
+	}
+
+	nextModel, cmd := model.Update(bufferingProgressMsg{playID: 1, percent: 42})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected stale buffering event to keep listening")
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if updated.app.NowPlaying == nil || updated.app.NowPlaying.Title != "Current Song" {
+		t.Fatal("expected listener to survive stale event and process current track")
+	}
+}
+
 func TestRenderArtworkANSIProducesBlockGrid(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {

@@ -279,7 +279,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 	case bufferingProgressMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
-			return m, nil
+			return m, listenPlaybackEventCmd(m.playbackEvents)
+		}
+		if m.progressActive || strings.EqualFold(strings.TrimSpace(m.app.StatusMessage), "Playing") {
+			return m, listenPlaybackEventCmd(m.playbackEvents)
 		}
 		percent := int(msg.percent)
 		m.bufferingPercent = &percent
@@ -287,7 +290,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackTrackChangedMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
-			return m, nil
+			return m, listenPlaybackEventCmd(m.playbackEvents)
 		}
 		totalMS := uint64(0)
 		if msg.meta.DurationSecs != nil {
@@ -303,20 +306,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			AlbumArtURL: msg.meta.AlbumArtURL,
 		}
 		m.bufferingPercent = nil
+		m.progressBaseMS = msg.initialMS
+		m.progressSince = time.Now()
+		m.progressActive = m.app.IsPlaying
+		if m.app.IsPlaying {
+			m.app.StatusMessage = "Playing"
+		}
 		m.artworkANSI = ""
 		m.artworkURL = ""
+		nextCmd := listenPlaybackEventCmd(m.playbackEvents)
+		if m.progressActive {
+			nextCmd = tea.Batch(nextCmd, playbackTickCmd())
+		}
 		if msg.meta.AlbumArtURL != nil && strings.TrimSpace(*msg.meta.AlbumArtURL) != "" {
 			m.artworkURL = *msg.meta.AlbumArtURL
 			if cached, ok := m.artCache[m.artworkURL]; ok {
 				m.artworkANSI = cached
-				return m, listenPlaybackEventCmd(m.playbackEvents)
+				return m, nextCmd
 			}
 			return m, tea.Batch(
-				listenPlaybackEventCmd(m.playbackEvents),
+				nextCmd,
 				fetchArtworkCmd(m.artworkURL, 14, 14),
 			)
 		}
-		return m, listenPlaybackEventCmd(m.playbackEvents)
+		return m, nextCmd
 	case playbackProgressMsg:
 		if msg.playID != m.currentPlayID || m.app.NowPlaying == nil {
 			return m, listenPlaybackEventCmd(m.playbackEvents)
@@ -325,6 +338,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.totalMS > 0 {
 			m.app.NowPlaying.TotalMS = msg.totalMS
 		}
+		m.bufferingPercent = nil
 		m.progressBaseMS = msg.currentMS
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
@@ -336,7 +350,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackErrorMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
-			return m, nil
+			return m, listenPlaybackEventCmd(m.playbackEvents)
 		}
 		m.app.StatusMessage = fmt.Sprintf("Playback runtime error: %v", msg.err)
 		return m, listenPlaybackEventCmd(m.playbackEvents)
