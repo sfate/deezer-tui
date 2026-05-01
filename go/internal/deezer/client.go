@@ -306,6 +306,10 @@ func (c *Client) FetchMediaURL(ctx context.Context, reqInput MediaRequest) (stri
 }
 
 func (c *Client) FetchEncryptedBytesFromSignedURL(ctx context.Context, signedURL string) ([]byte, error) {
+	return c.FetchEncryptedBytesFromSignedURLWithProgress(ctx, signedURL, nil)
+}
+
+func (c *Client) FetchEncryptedBytesFromSignedURLWithProgress(ctx context.Context, signedURL string, onProgress func(downloaded, total int64)) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build signed CDN request: %w", err)
@@ -322,11 +326,36 @@ func (c *Client) FetchEncryptedBytesFromSignedURL(ctx context.Context, signedURL
 		return nil, fmt.Errorf("signed CDN request returned status %d", resp.StatusCode)
 	}
 
-	payload, err := io.ReadAll(resp.Body)
+	var reader io.Reader = resp.Body
+	if onProgress != nil {
+		reader = &progressReader{
+			reader:     resp.Body,
+			total:      resp.ContentLength,
+			onProgress: onProgress,
+		}
+		onProgress(0, resp.ContentLength)
+	}
+	payload, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("read encrypted audio bytes: %w", err)
 	}
 	return payload, nil
+}
+
+type progressReader struct {
+	reader     io.Reader
+	downloaded int64
+	total      int64
+	onProgress func(downloaded, total int64)
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.downloaded += int64(n)
+		r.onProgress(r.downloaded, r.total)
+	}
+	return n, err
 }
 
 func (c *Client) OpenSignedStream(ctx context.Context, signedURL string) (io.ReadCloser, int64, error) {

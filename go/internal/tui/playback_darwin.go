@@ -559,7 +559,20 @@ func prepareDarwinTrackFile(ctx context.Context, client *deezer.Client, trackID 
 		onBufferingProgress(40)
 	}
 
-	encrypted, err := client.FetchEncryptedBytesFromSignedURL(ctx, signedURL)
+	encrypted, err := client.FetchEncryptedBytesFromSignedURLWithProgress(ctx, signedURL, func(downloaded, total int64) {
+		if onBufferingProgress == nil {
+			return
+		}
+		if total <= 0 {
+			onBufferingProgress(40)
+			return
+		}
+		percent := 40 + int((downloaded*40)/total)
+		if percent > 80 {
+			percent = 80
+		}
+		onBufferingProgress(uint8(percent))
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -849,6 +849,84 @@ func TestPlaybackProgressPrebuffersNextQueuedTrack(t *testing.T) {
 	}
 }
 
+func TestLastFlowTrackStartsLoadingNextBatchForPrebuffer(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.IsFlowQueue = true
+	model.app.FlowNextIndex = 2
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.QueueIndex = intPtr(1)
+
+	cmd := model.maybePrebufferNextTrack()
+	if cmd == nil {
+		t.Fatal("expected last Flow track to start loading more Flow")
+	}
+	if !model.app.FlowLoadingMore {
+		t.Fatal("expected FlowLoadingMore to be set")
+	}
+	if len(runtime.prebuffered) != 0 {
+		t.Fatalf("did not expect prebuffer clear before next batch arrives, got %#v", runtime.prebuffered)
+	}
+}
+
+func TestStartingLastFlowTrackLoadsNextBatchImmediately(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.IsFlowQueue = true
+	model.app.FlowNextIndex = 2
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+
+	cmd := model.startTrackPlayback("2")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	if !model.app.FlowLoadingMore {
+		t.Fatal("expected starting last Flow track to request next batch immediately")
+	}
+}
+
+func TestAppendedFlowBatchPrebuffersFirstNewTrack(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.IsPlaying = true
+	model.app.IsFlowQueue = true
+	model.app.FlowLoadingMore = true
+	model.app.FlowNextIndex = 2
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+
+	nextModel, _ := model.Update(collectionLoadedMsg{
+		id:     "__flow__",
+		title:  "Flow",
+		tracks: []app.Track{{ID: "3", Title: "Three", Artist: "C"}, {ID: "4", Title: "Four", Artist: "D"}},
+		isFlow: true,
+		append: true,
+	})
+	updated := nextModel.(Model)
+
+	if updated.app.FlowLoadingMore {
+		t.Fatal("expected FlowLoadingMore to clear after append")
+	}
+	if !updated.app.IsPlaying {
+		t.Fatal("expected background Flow append not to stop current playback")
+	}
+	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "3" {
+		t.Fatalf("expected first appended Flow track to prebuffer, got %#v", runtime.prebuffered)
+	}
+}
+
 func TestPlaybackProgressClearsPrebufferAtQueueEnd(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)

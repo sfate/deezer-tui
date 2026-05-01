@@ -196,9 +196,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadHomeCmd(m.loader)
 	case collectionLoadedMsg:
 		if msg.isFlow && msg.append {
+			oldQueueLen := len(m.app.QueueTracks)
 			result := m.app.AppendFlowTracks(msg.tracks, msg.autoplay)
+			m.app.FlowLoadingMore = false
 			if result.AppendedCount == 0 {
-				m.app.IsPlaying = false
 				m.app.StatusMessage = "Flow returned no new tracks"
 				return m, nil
 			}
@@ -206,6 +207,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.StatusMessage = fmt.Sprintf("Appended %d Flow tracks", result.AppendedCount)
 			if result.AutoplayTrackID != nil {
 				return m, m.startTrackPlayback(*result.AutoplayTrackID)
+			}
+			if oldQueueLen < len(m.app.QueueTracks) {
+				m.prebufferTrack(m.app.QueueTracks[oldQueueLen].ID)
 			}
 			return m, nil
 		}
@@ -343,11 +347,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
 		m.app.StatusMessage = "Playing"
-		m.maybePrebufferNextTrack()
+		loadMoreCmd := m.maybePrebufferNextTrack()
 		if m.progressActive {
-			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd())
+			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd(), loadMoreCmd)
 		}
-		return m, listenPlaybackEventCmd(m.playbackEvents)
+		return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), loadMoreCmd)
 	case playbackErrorMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
 			return m, listenPlaybackEventCmd(m.playbackEvents)
@@ -910,7 +914,10 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
-	return startPlaybackCmdWithEvents(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
+	return tea.Batch(
+		startPlaybackCmdWithEvents(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents),
+		m.maybeLoadMoreFlowForTail(),
+	)
 }
 
 func (m *Model) stopCurrentSession() {
@@ -926,24 +933,44 @@ func (m *Model) stopCurrentSession() {
 	m.session.Stop()
 }
 
-func (m *Model) maybePrebufferNextTrack() {
-	runtime, ok := m.runtime.(PrebufferingRuntime)
-	if !ok {
-		return
-	}
+func (m *Model) maybePrebufferNextTrack() tea.Cmd {
 	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
-		runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
-		return
+		if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
+			runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
+		}
+		return nil
 	}
 
 	nextIndex := *m.app.QueueIndex + 1
 	if nextIndex < 0 || nextIndex >= len(m.app.QueueTracks) {
-		runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
-		return
+		if cmd := m.maybeLoadMoreFlowForTail(); cmd != nil {
+			return cmd
+		}
+		if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
+			runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
+		}
+		return nil
 	}
 
-	nextTrack := m.app.QueueTracks[nextIndex]
-	runtime.Prebuffer(nextTrack.ID, qualityFromConfig(m.app.Config.DefaultQuality))
+	m.prebufferTrack(m.app.QueueTracks[nextIndex].ID)
+	return nil
+}
+
+func (m *Model) maybeLoadMoreFlowForTail() tea.Cmd {
+	if !m.app.ShouldLoadMoreFlow() {
+		return nil
+	}
+	m.app.FlowLoadingMore = true
+	m.app.StatusMessage = "Loading more Flow..."
+	return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, false)
+}
+
+func (m *Model) prebufferTrack(trackID string) {
+	runtime, ok := m.runtime.(PrebufferingRuntime)
+	if !ok {
+		return
+	}
+	runtime.Prebuffer(trackID, qualityFromConfig(m.app.Config.DefaultQuality))
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {
