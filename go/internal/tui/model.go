@@ -16,7 +16,7 @@ import (
 	"deezer-tui-go/internal/player"
 )
 
-const (
+var (
 	gruvboxBgHard = "#100c18"
 	gruvboxBg0    = "#15111f"
 	gruvboxBg1    = "#1c1629"
@@ -121,6 +121,8 @@ func New() Model {
 }
 
 func NewWithConfig(cfg config.Config) Model {
+	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 
 	var loader Loader
@@ -148,6 +150,8 @@ func NewWithConfig(cfg config.Config) Model {
 }
 
 func NewWithLoader(cfg config.Config, loader Loader) Model {
+	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 	state.StatusMessage = "Loading Deezer library..."
 	if loader == nil {
@@ -367,6 +371,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.session.Stop()
 			}
 			return m, tea.Quit
+		case "esc":
+			if m.app.ViewingSettings {
+				m.app.ViewingSettings = false
+				m.app.ActivePanel = app.ActivePanelMain
+				m.app.StatusMessage = "Settings closed"
+			}
 		case "tab":
 			m.cyclePanelForward()
 		case "shift+tab":
@@ -814,16 +824,21 @@ func (m *Model) adjustVolume(delta int) {
 func (m *Model) adjustSelectedSetting(direction int) {
 	switch derefOrZero(m.app.SettingsState.Selected()) {
 	case 0:
-		m.adjustVolume(direction * 5)
+		m.app.Config.Theme = nextTheme(m.app.Config.Theme, direction)
+		applyTheme(m.app.Config.Theme)
+		m.app.StatusMessage = fmt.Sprintf("Theme: %s", themeLabel(m.app.Config.Theme))
+		m.persistConfig()
 	case 1:
+		m.adjustVolume(direction * 5)
+	case 2:
 		m.app.Config.DefaultQuality = nextQuality(m.app.Config.DefaultQuality, direction)
 		m.app.StatusMessage = fmt.Sprintf("Quality: %s", qualityLabel(m.app.Config.DefaultQuality))
 		m.persistConfig()
-	case 2:
+	case 3:
 		m.app.Config.CrossfadeEnabled = !m.app.Config.CrossfadeEnabled
 		m.app.StatusMessage = fmt.Sprintf("Crossfade: %s", onOff(m.app.Config.CrossfadeEnabled))
 		m.persistConfig()
-	case 3:
+	case 4:
 		m.app.Config.CrossfadeDurationMS = nextCrossfadeDuration(m.app.Config.CrossfadeDurationMS, direction)
 		m.app.StatusMessage = fmt.Sprintf("Crossfade duration: %dms", m.app.Config.CrossfadeDurationMS)
 		m.persistConfig()
@@ -1634,6 +1649,106 @@ func qualityLabel(q config.AudioQuality) string {
 	}
 }
 
+type colorTheme struct {
+	bgHard string
+	bg0    string
+	bg1    string
+	bg3    string
+	fg0    string
+	fg1    string
+	fg4    string
+	yellow string
+	blue   string
+	aqua   string
+	green  string
+	orange string
+	red    string
+	purple string
+}
+
+var colorThemes = map[config.Theme]colorTheme{
+	config.ThemeAetheria: {
+		bgHard: "#100c18",
+		bg0:    "#15111f",
+		bg1:    "#1c1629",
+		bg3:    "#3d314a",
+		fg0:    "#e4d4de",
+		fg1:    "#c8b3bf",
+		fg4:    "#8f7383",
+		yellow: "#f3c969",
+		blue:   "#8f7383",
+		aqua:   "#21c7d9",
+		green:  "#21c7d9",
+		orange: "#e07a87",
+		red:    "#e06c75",
+		purple: "#b18bb8",
+	},
+	config.ThemeGruvbox: {
+		bgHard: "#1d2021",
+		bg0:    "#282828",
+		bg1:    "#3c3836",
+		bg3:    "#665c54",
+		fg0:    "#fbf1c7",
+		fg1:    "#ebdbb2",
+		fg4:    "#a89984",
+		yellow: "#fabd2f",
+		blue:   "#83a598",
+		aqua:   "#8ec07c",
+		green:  "#b8bb26",
+		orange: "#fe8019",
+		red:    "#fb4934",
+		purple: "#d3869b",
+	},
+}
+
+func applyTheme(theme config.Theme) {
+	palette, ok := colorThemes[config.NormalizeTheme(theme)]
+	if !ok {
+		palette = colorThemes[config.ThemeAetheria]
+	}
+	gruvboxBgHard = palette.bgHard
+	gruvboxBg0 = palette.bg0
+	gruvboxBg1 = palette.bg1
+	gruvboxBg3 = palette.bg3
+	gruvboxFg0 = palette.fg0
+	gruvboxFg1 = palette.fg1
+	gruvboxFg4 = palette.fg4
+	gruvboxYellow = palette.yellow
+	gruvboxBlue = palette.blue
+	gruvboxAqua = palette.aqua
+	gruvboxGreen = palette.green
+	gruvboxOrange = palette.orange
+	gruvboxRed = palette.red
+	gruvboxPurple = palette.purple
+}
+
+func themeLabel(theme config.Theme) string {
+	switch config.NormalizeTheme(theme) {
+	case config.ThemeGruvbox:
+		return "Gruvbox"
+	default:
+		return "Aetheria"
+	}
+}
+
+func nextTheme(current config.Theme, direction int) config.Theme {
+	themes := []config.Theme{config.ThemeAetheria, config.ThemeGruvbox}
+	current = config.NormalizeTheme(current)
+	idx := 0
+	for i, theme := range themes {
+		if theme == current {
+			idx = i
+			break
+		}
+	}
+	if direction < 0 {
+		idx = (idx - 1 + len(themes)) % len(themes)
+	} else {
+		idx = (idx + 1) % len(themes)
+	}
+	return themes[idx]
+}
+
 func nextQuality(current config.AudioQuality, direction int) config.AudioQuality {
 	qualities := []config.AudioQuality{config.AudioQuality128, config.AudioQuality320, config.AudioQualityFlac}
 	idx := 1
@@ -1685,6 +1800,7 @@ func (m Model) renderSettingsRows() []string {
 		value string
 		color string
 	}{
+		{label: "Theme", value: themeLabel(m.app.Config.Theme), color: gruvboxBlue},
 		{label: "Volume", value: fmt.Sprintf("%d%%", m.app.Volume), color: gruvboxAqua},
 		{label: "Quality", value: qualityLabel(m.app.Config.DefaultQuality), color: gruvboxPurple},
 		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: gruvboxOrange},

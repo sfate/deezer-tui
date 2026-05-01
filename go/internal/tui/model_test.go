@@ -252,7 +252,7 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	model.app.SettingsState.Select(intPtr(0))
 
 	view := model.renderMain(80, 12)
-	for _, want := range []string{"Volume:", "Quality:", "Crossfade:", "Duration:"} {
+	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected settings view to contain %q", want)
 		}
@@ -274,7 +274,7 @@ func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
 	}
 	model.app.ViewingSettings = true
 	model.app.ActivePanel = app.ActivePanelMain
-	model.app.SettingsState.Select(intPtr(1))
+	model.app.SettingsState.Select(intPtr(2))
 
 	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	updated := nextModel.(Model)
@@ -296,6 +296,50 @@ func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
 	}
 }
 
+func TestSettingsThemePersistsAndAppliesImmediately(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(0))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.Config.Theme != config.ThemeGruvbox {
+		t.Fatalf("expected theme to cycle to gruvbox, got %s", updated.app.Config.Theme)
+	}
+	if len(saved) != 1 || saved[0].Theme != config.ThemeGruvbox {
+		t.Fatalf("expected gruvbox theme to be persisted, got %#v", saved)
+	}
+	if gruvboxBg0 != "#282828" {
+		t.Fatalf("expected gruvbox palette to apply, got bg %s", gruvboxBg0)
+	}
+}
+
+func TestEscClosesSettingsAndKeepsCollection(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.CurrentPlaylistID = stringPtr("__home__")
+	model.app.CurrentTracks = []app.Track{{ID: "1", Title: "One", Artist: "A"}}
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	updated := nextModel.(Model)
+	if updated.app.ViewingSettings {
+		t.Fatal("expected settings to close")
+	}
+	if updated.app.ActivePanel != app.ActivePanelMain {
+		t.Fatalf("expected focus to remain on main collection, got %v", updated.app.ActivePanel)
+	}
+	if updated.app.CurrentPlaylistID == nil || *updated.app.CurrentPlaylistID != "__home__" || len(updated.app.CurrentTracks) != 1 {
+		t.Fatal("expected current collection to remain loaded")
+	}
+}
+
 func TestSettingsVolumeTakesEffectOnActiveSession(t *testing.T) {
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
 	session := &fakePlaybackSession{}
@@ -303,7 +347,7 @@ func TestSettingsVolumeTakesEffectOnActiveSession(t *testing.T) {
 	model.app.Volume = 50
 	model.app.ViewingSettings = true
 	model.app.ActivePanel = app.ActivePanelMain
-	model.app.SettingsState.Select(intPtr(0))
+	model.app.SettingsState.Select(intPtr(1))
 
 	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "l"}))
 	updated := nextModel.(Model)

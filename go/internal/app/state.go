@@ -30,7 +30,7 @@ const (
 	CommandShutdown
 )
 
-const SettingsItemCount = 4
+const SettingsItemCount = 5
 
 type SearchCategory int
 
@@ -156,6 +156,7 @@ type App struct {
 }
 
 func New(cfg config.Config) *App {
+	cfg.Theme = config.NormalizeTheme(cfg.Theme)
 	app := &App{
 		Config:              cfg,
 		CurrentRoute:        RouteLibrary,
