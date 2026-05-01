@@ -320,7 +320,7 @@ func TestSettingsThemePersistsAndAppliesImmediately(t *testing.T) {
 	}
 }
 
-func TestEscClosesSettingsAndKeepsCollection(t *testing.T) {
+func TestEscFocusesLibraryAndKeepsCollection(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.app.ViewingSettings = true
 	model.app.ActivePanel = app.ActivePanelMain
@@ -332,11 +332,27 @@ func TestEscClosesSettingsAndKeepsCollection(t *testing.T) {
 	if updated.app.ViewingSettings {
 		t.Fatal("expected settings to close")
 	}
-	if updated.app.ActivePanel != app.ActivePanelMain {
-		t.Fatalf("expected focus to remain on main collection, got %v", updated.app.ActivePanel)
+	if updated.app.ActivePanel != app.ActivePanelNavigation {
+		t.Fatalf("expected focus to move to library, got %v", updated.app.ActivePanel)
 	}
 	if updated.app.CurrentPlaylistID == nil || *updated.app.CurrentPlaylistID != "__home__" || len(updated.app.CurrentTracks) != 1 {
 		t.Fatal("expected current collection to remain loaded")
+	}
+}
+
+func TestEscWhileSearchingFocusesLibrary(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.IsSearching = true
+	model.app.ActivePanel = app.ActivePanelSearch
+	model.app.SearchQuery = "artist"
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	updated := nextModel.(Model)
+	if updated.app.IsSearching {
+		t.Fatal("expected search input to close")
+	}
+	if updated.app.ActivePanel != app.ActivePanelNavigation {
+		t.Fatalf("expected focus to move to library, got %v", updated.app.ActivePanel)
 	}
 }
 
@@ -593,6 +609,51 @@ func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
 	}
 	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
 		t.Fatal("expected queue index to advance")
+	}
+}
+
+func TestStartingNextTrackClearsStaleNowPlayingAndArtwork(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "Old Song", Artist: "A"},
+		{ID: "2", Title: "New Song", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "Old Song", Artist: "A"}
+	model.artworkANSI = "old-art"
+	model.artworkURL = "https://example.invalid/old.jpg"
+
+	cmd := model.startTrackPlayback("2")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	if model.app.NowPlaying != nil {
+		t.Fatal("expected stale now-playing metadata to be cleared while buffering")
+	}
+	if model.artworkANSI != "" || model.artworkURL != "" {
+		t.Fatal("expected stale artwork to be cleared while buffering")
+	}
+
+	model.width = 120
+	view := model.renderStatusLine()
+	if !strings.Contains(view, "New Song") {
+		t.Fatal("expected queued next song title while buffering")
+	}
+	if strings.Contains(view, "Old Song") || strings.Contains(view, "old-art") {
+		t.Fatal("did not expect stale song or artwork while buffering")
+	}
+}
+
+func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "Song", Artist: "Artist"}
+	model.artworkANSI = ""
+
+	view := model.renderStatusLine()
+	if !strings.Contains(view, "NO ART") || !strings.Contains(view, "+--------+") {
+		t.Fatal("expected default artwork placeholder")
 	}
 }
 

@@ -372,11 +372,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "esc":
-			if m.app.ViewingSettings {
-				m.app.ViewingSettings = false
-				m.app.ActivePanel = app.ActivePanelMain
-				m.app.StatusMessage = "Settings closed"
-			}
+			m.app.IsSearching = false
+			m.app.ViewingSettings = false
+			m.app.ActivePanel = app.ActivePanelNavigation
+			m.app.StatusMessage = "Library"
 		case "tab":
 			m.cyclePanelForward()
 		case "shift+tab":
@@ -750,7 +749,9 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		m.app.IsSearching = false
-		m.app.StatusMessage = "Search canceled"
+		m.app.ViewingSettings = false
+		m.app.ActivePanel = app.ActivePanelNavigation
+		m.app.StatusMessage = "Library"
 		return nil
 	case "enter":
 		query := strings.TrimSpace(m.app.SearchQuery)
@@ -870,6 +871,9 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	m.progressBaseMS = 0
 	m.progressSince = time.Time{}
 	m.pauseRequested = false
+	m.app.NowPlaying = nil
+	m.artworkANSI = ""
+	m.artworkURL = ""
 	m.nextPlaybackID++
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
@@ -1126,7 +1130,7 @@ func (m Model) renderStatusLine() string {
 	}
 	art := m.artworkANSI
 	if art == "" {
-		art = strings.Join(make([]string, 7), "\n")
+		art = defaultArtworkANSI()
 	}
 	body := joinColumns(
 		" ",
@@ -1233,6 +1237,22 @@ func (m Model) renderTextSlot(content string, width, height, padX, padY int) str
 		out = append(out, strings.Repeat(" ", width))
 	}
 	return strings.Join(out, "\n")
+}
+
+func defaultArtworkANSI() string {
+	lines := []string{
+		"  +--------+  ",
+		"  |  /\\    |  ",
+		"  | /  \\   |  ",
+		"  | \\__/ o |  ",
+		"  |        |  ",
+		"  +--------+  ",
+		"    NO ART    ",
+	}
+	for i, line := range lines {
+		lines[i] = paint(fitToWidth(line, 14), gruvboxFg4, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func bootstrapCmd(loader Loader) tea.Cmd {
