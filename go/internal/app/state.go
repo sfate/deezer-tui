@@ -30,6 +30,8 @@ const (
 	CommandShutdown
 )
 
+const SettingsItemCount = 4
+
 type SearchCategory int
 
 const (
@@ -124,7 +126,6 @@ type App struct {
 	NowPlaying          *NowPlaying
 	IsPlaying           bool
 	Volume              uint16
-	DiscordRPCEnabled   bool
 	ActivePanel         ActivePanel
 	NavState            ListState
 	PlaylistState       ListState
@@ -160,7 +161,6 @@ func New(cfg config.Config) *App {
 		CurrentRoute:        RouteLibrary,
 		IsPlaying:           false,
 		Volume:              100,
-		DiscordRPCEnabled:   cfg.DiscordRPCEnabled,
 		ActivePanel:         ActivePanelNavigation,
 		Playlists:           []Playlist{},
 		Queue:               []string{},
@@ -236,7 +236,7 @@ func (a *App) HandleDown() {
 	case ActivePanelMain:
 		if a.ViewingSettings {
 			current := derefOrZero(a.SettingsState.Selected())
-			a.SettingsState.Select(intPtr(min(current+1, 4)))
+			a.SettingsState.Select(intPtr(min(current+1, SettingsItemCount-1)))
 		} else if a.ShowingSearchResult {
 			max := 0
 			switch a.SearchCategory {
@@ -322,8 +322,10 @@ func (a *App) HandleUp() {
 
 func (a *App) HandleRight() {
 	switch a.ActivePanel {
-	case ActivePanelNavigation, ActivePanelPlaylists, ActivePanelQueue:
-		a.ActivePanel = ActivePanelSearch
+	case ActivePanelNavigation, ActivePanelPlaylists:
+		a.ActivePanel = ActivePanelQueue
+	case ActivePanelQueue:
+		a.ActivePanel = ActivePanelMain
 	case ActivePanelSearch:
 		a.ActivePanel = ActivePanelMain
 	case ActivePanelMain:
@@ -343,6 +345,11 @@ func (a *App) HandleRight() {
 
 func (a *App) HandleLeft() {
 	switch a.ActivePanel {
+	case ActivePanelQueue:
+		a.ActivePanel = ActivePanelPlaylists
+		return
+	}
+	switch a.ActivePanel {
 	case ActivePanelMain:
 		if a.ShowingSearchResult {
 			switch a.SearchCategory {
@@ -355,7 +362,7 @@ func (a *App) HandleLeft() {
 			}
 			a.MainState.Select(intPtr(0))
 		} else {
-			a.ActivePanel = ActivePanelPlaylists
+			a.ActivePanel = ActivePanelQueue
 		}
 	case ActivePanelPlayer:
 		a.PlayerButtonIndex = max0(a.PlayerButtonIndex - 1)

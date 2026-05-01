@@ -53,7 +53,6 @@ type Config struct {
 	CrossfadeEnabled    bool         `json:"crossfade_enabled"`
 	CrossfadeDurationMS uint64       `json:"crossfade_duration_ms"`
 	DefaultQuality      AudioQuality `json:"default_quality"`
-	DiscordRPCEnabled   bool         `json:"discord_rpc_enabled"`
 	ARL                 string       `json:"arl"`
 }
 
@@ -63,7 +62,6 @@ func Default() Config {
 		CrossfadeEnabled:    false,
 		CrossfadeDurationMS: 0,
 		DefaultQuality:      AudioQuality320,
-		DiscordRPCEnabled:   false,
 		ARL:                 "",
 	}
 }

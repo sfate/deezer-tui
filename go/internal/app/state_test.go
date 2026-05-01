@@ -83,6 +83,50 @@ func TestHandleRightCyclesPlayerPanelIntoPlayerInfo(t *testing.T) {
 	}
 }
 
+func TestHandleRightAndLeftNavigateThroughQueueBetweenSidebarAndMain(t *testing.T) {
+	app := testApp()
+	app.ActivePanel = ActivePanelNavigation
+
+	app.HandleRight()
+	if app.ActivePanel != ActivePanelQueue {
+		t.Fatalf("expected right from navigation to focus queue, got %v", app.ActivePanel)
+	}
+
+	app.HandleRight()
+	if app.ActivePanel != ActivePanelMain {
+		t.Fatalf("expected right from queue to focus main, got %v", app.ActivePanel)
+	}
+
+	app.HandleLeft()
+	if app.ActivePanel != ActivePanelQueue {
+		t.Fatalf("expected left from main to focus queue, got %v", app.ActivePanel)
+	}
+
+	app.HandleLeft()
+	if app.ActivePanel != ActivePanelPlaylists {
+		t.Fatalf("expected left from queue to focus playlists, got %v", app.ActivePanel)
+	}
+}
+
+func TestHandleUpAndDownNavigateInsideQueue(t *testing.T) {
+	app := testApp()
+	app.ActivePanel = ActivePanelQueue
+	app.Queue = []string{"One - A", "Two - B", "Three - C"}
+	app.QueueState.Select(intPtr(0))
+
+	app.HandleDown()
+	assertSelected(t, app.QueueState.Selected(), 1)
+
+	app.HandleDown()
+	assertSelected(t, app.QueueState.Selected(), 2)
+
+	app.HandleDown()
+	assertSelected(t, app.QueueState.Selected(), 2)
+
+	app.HandleUp()
+	assertSelected(t, app.QueueState.Selected(), 1)
+}
+
 func TestHandleLeftOnMainCyclesSearchCategoriesAndResetsSelection(t *testing.T) {
 	app := testApp()
 	app.ActivePanel = ActivePanelMain

@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -59,12 +60,14 @@ func (f *fakeLoader) Search(_ context.Context, query string) (SearchData, error)
 
 type fakePlaybackRuntime struct {
 	started     []string
+	qualities   []deezer.AudioQuality
 	prebuffered []string
 	session     *fakePlaybackSession
 }
 
-func (f *fakePlaybackRuntime) Start(trackID string, _ deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
+func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
+	f.qualities = append(f.qualities, quality)
 	f.session = &fakePlaybackSession{}
 	return f.session, nil
 }
@@ -79,6 +82,7 @@ type fakePlaybackSession struct {
 	stopped bool
 	waitErr error
 	volume  float32
+	faded   chan time.Duration
 }
 
 func (f *fakePlaybackSession) Pause()              { f.paused = true }
@@ -86,11 +90,17 @@ func (f *fakePlaybackSession) Resume()             { f.resumed = true }
 func (f *fakePlaybackSession) Stop()               { f.stopped = true }
 func (f *fakePlaybackSession) Wait() error         { return f.waitErr }
 func (f *fakePlaybackSession) SetVolume(v float32) { f.volume = v }
+func (f *fakePlaybackSession) FadeOutStop(d time.Duration) {
+	if f.faded != nil {
+		f.faded <- d
+	}
+}
 
 func TestViewUsesAltScreen(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.width = 120
 	model.height = 40
+	model.ready = true
 
 	view := model.View()
 	if !view.AltScreen {
@@ -98,6 +108,32 @@ func TestViewUsesAltScreen(t *testing.T) {
 	}
 	if view.WindowTitle != "deezer-tui-go" {
 		t.Fatalf("unexpected window title %q", view.WindowTitle)
+	}
+}
+
+func TestViewShowsLoadingLogoBeforeInitialCollectionLoad(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.height = 40
+	model.ready = false
+
+	view := model.View().Content
+	if !strings.Contains(view, "██████") {
+		t.Fatal("expected loading logo in startup view")
+	}
+}
+
+func TestInitialLoadFailureLeavesLoadingScreen(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.ready = false
+
+	nextModel, _ := model.Update(loadFailedMsg{message: "Bootstrap error: denied"})
+	updated := nextModel.(Model)
+	if !updated.ready {
+		t.Fatal("expected load failure to make the app ready")
+	}
+	if updated.app.StatusMessage != "Bootstrap error: denied" {
+		t.Fatalf("expected failure status to be shown, got %q", updated.app.StatusMessage)
 	}
 }
 
@@ -115,6 +151,7 @@ func TestViewShowsProgressBar(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.width = 120
 	model.height = 40
+	model.ready = true
 	model.app.ActivePanel = app.ActivePanelMain
 	model.app.CurrentTracks = []app.Track{
 		{ID: "1", Title: "Selected Song", Artist: "Chosen Artist"},
@@ -169,6 +206,134 @@ func TestViewShowsProgressBar(t *testing.T) {
 	}
 	if !strings.Contains(view, "space play/pause") {
 		t.Fatal("expected spacebar control hint in view")
+	}
+}
+
+func TestMiddleColumnsUseEqualWidths(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.height = 40
+	model.ready = true
+
+	sidebarWidth := min(28, max(22, model.width/5))
+	middleAvailable := max(72, model.width-sidebarWidth-4)
+	queueWidth := middleAvailable / 2
+	mainWidth := middleAvailable - queueWidth
+
+	queuePanel := model.renderQueue(queueWidth, 10)
+	mainPanel := model.renderMain(mainWidth, 10)
+	if textWidth(strings.Split(queuePanel, "\n")[0]) != textWidth(strings.Split(mainPanel, "\n")[0]) {
+		t.Fatalf("expected queue and main columns to have equal widths, got %d and %d", queueWidth, mainWidth)
+	}
+}
+
+func TestQueueRowsUseQueuePanelWidth(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ActivePanel = app.ActivePanelQueue
+	model.app.QueueTracks = []app.Track{{
+		ID:     "1",
+		Title:  "Very Long Queue Track Title That Should Use Full Queue Width",
+		Artist: "Wide Artist",
+	}}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.QueueState.Select(intPtr(0))
+
+	view := model.renderQueue(80, 20)
+	if !strings.Contains(view, "Very Long Queue Track Title") {
+		t.Fatal("expected queue row to use the wider queue panel width")
+	}
+}
+
+func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(0))
+
+	view := model.renderMain(80, 12)
+	for _, want := range []string{"Volume:", "Quality:", "Crossfade:", "Duration:"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected settings view to contain %q", want)
+		}
+	}
+	if strings.Contains(view, "Discord") {
+		t.Fatal("did not expect Discord setting to be rendered")
+	}
+}
+
+func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
+	cfg := config.Default()
+	cfg.DefaultQuality = config.AudioQuality320
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, runtime)
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(1))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.Config.DefaultQuality != config.AudioQualityFlac {
+		t.Fatalf("expected quality to cycle to FLAC, got %s", updated.app.Config.DefaultQuality)
+	}
+	if len(saved) != 1 || saved[0].DefaultQuality != config.AudioQualityFlac {
+		t.Fatalf("expected FLAC quality to be persisted, got %#v", saved)
+	}
+
+	cmd := updated.startTrackPlayback("track-1")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	nextModel, _ = updated.Update(cmd())
+	_ = nextModel.(Model)
+	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQualityFlac {
+		t.Fatalf("expected playback to use FLAC quality, got %#v", runtime.qualities)
+	}
+}
+
+func TestSettingsVolumeTakesEffectOnActiveSession(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	session := &fakePlaybackSession{}
+	model.session = session
+	model.app.Volume = 50
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(0))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "l"}))
+	updated := nextModel.(Model)
+	if updated.app.Volume != 55 {
+		t.Fatalf("expected volume to increase, got %d", updated.app.Volume)
+	}
+	if session.volume != 0.55 {
+		t.Fatalf("expected active session volume to update, got %f", session.volume)
+	}
+}
+
+func TestCrossfadeSettingUsesFadeStopWhenReplacingSession(t *testing.T) {
+	session := &fakePlaybackSession{faded: make(chan time.Duration, 1)}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.session = session
+	model.app.Config.CrossfadeEnabled = true
+	model.app.Config.CrossfadeDurationMS = 3000
+
+	model.stopCurrentSession()
+
+	select {
+	case got := <-session.faded:
+		if got != 3*time.Second {
+			t.Fatalf("expected 3s fade, got %s", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected fade stop to be used")
+	}
+	if session.stopped {
+		t.Fatal("did not expect immediate stop when fade stop is available")
 	}
 }
 
@@ -260,7 +425,23 @@ func TestInitBootstrapsPlaylistsAndLoadsHome(t *testing.T) {
 
 	initCmd := model.Init()
 	msg := initCmd()
-	nextModel, cmd := model.Update(msg)
+	var bootstrapMsg tea.Msg
+	switch typed := msg.(type) {
+	case tea.BatchMsg:
+		for _, cmd := range typed {
+			if cmd == nil {
+				continue
+			}
+			candidate := cmd()
+			if _, ok := candidate.(bootstrapLoadedMsg); ok {
+				bootstrapMsg = candidate
+				break
+			}
+		}
+	default:
+		bootstrapMsg = msg
+	}
+	nextModel, cmd := model.Update(bootstrapMsg)
 	updated := nextModel.(Model)
 
 	if len(updated.app.Playlists) != 1 {
@@ -278,6 +459,9 @@ func TestInitBootstrapsPlaylistsAndLoadsHome(t *testing.T) {
 	}
 	if len(updated.app.CurrentTracks) != 1 {
 		t.Fatalf("expected home tracks to load, got %d", len(updated.app.CurrentTracks))
+	}
+	if updated.app.ActivePanel != app.ActivePanelNavigation {
+		t.Fatalf("expected focus to stay on navigation after initial home load, got %v", updated.app.ActivePanel)
 	}
 }
 
@@ -365,6 +549,39 @@ func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
 	}
 	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
 		t.Fatal("expected queue index to advance")
+	}
+}
+
+func TestSelectingTrackInCurrentCollectionKeepsExistingQueue(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.CurrentTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+		{ID: "3", Title: "Three", Artist: "C"},
+	}
+	model.app.QueueTracks = append([]app.Track(nil), model.app.CurrentTracks...)
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.MainState.Select(intPtr(2))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected queue index to switch to selected track, got %#v", updated.app.QueueIndex)
+	}
+	if len(updated.app.QueueTracks) != 3 {
+		t.Fatalf("expected queue to stay intact, got %d tracks", len(updated.app.QueueTracks))
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "2" {
+		t.Fatalf("expected selected queued track to start, got %#v", runtime.started)
 	}
 }
 

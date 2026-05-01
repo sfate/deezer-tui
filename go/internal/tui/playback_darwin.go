@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"deezer-tui-go/internal/deezer"
 	"deezer-tui-go/internal/player"
@@ -170,6 +171,24 @@ func (s *darwinPlaybackSession) Stop() {
 	if s.token != 0 {
 		_ = s.manager.stop(s.token)
 	}
+}
+
+func (s *darwinPlaybackSession) FadeOutStop(duration time.Duration) {
+	if duration <= 0 {
+		s.Stop()
+		return
+	}
+
+	steps := 20
+	stepDuration := duration / time.Duration(steps)
+	if stepDuration <= 0 {
+		stepDuration = time.Millisecond
+	}
+	for step := steps - 1; step >= 0; step-- {
+		s.SetVolume(float32(step) / float32(steps))
+		time.Sleep(stepDuration)
+	}
+	s.Stop()
 }
 
 func (s *darwinPlaybackSession) Wait() error {

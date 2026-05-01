@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	"deezer-tui-go/internal/deezer"
 	"deezer-tui-go/internal/player"
 )
@@ -20,6 +22,10 @@ type PlayerRuntime interface {
 type PrebufferingRuntime interface {
 	PlayerRuntime
 	Prebuffer(trackID string, quality deezer.AudioQuality)
+}
+
+type fadeStoppingSession interface {
+	FadeOutStop(duration time.Duration)
 }
 
 type playbackCapableLoader interface {
