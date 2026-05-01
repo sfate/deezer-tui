@@ -34,10 +34,11 @@ type Controller interface {
 }
 
 type EventHandler struct {
-	OnTrackChanged     func(meta deezer.TrackMetadata, quality deezer.AudioQuality, initialMS uint64)
-	OnPlaybackProgress func(currentMS, totalMS uint64)
-	OnPlaybackStopped  func()
-	OnError            func(error)
+	OnTrackChanged      func(meta deezer.TrackMetadata, quality deezer.AudioQuality, initialMS uint64)
+	OnBufferingProgress func(percent uint8)
+	OnPlaybackProgress  func(currentMS, totalMS uint64)
+	OnPlaybackStopped   func()
+	OnError             func(error)
 }
 
 type PipelineOptions struct {
@@ -222,6 +223,14 @@ func runTrackPipeline(
 	}
 
 	var queuedBytes int
+	prebufferTarget := opts.PrebufferBytes
+	if contentLength > 0 {
+		remaining := int(contentLength - seekTargetBytes)
+		if remaining > 0 && remaining < prebufferTarget {
+			prebufferTarget = remaining
+		}
+	}
+	reportBufferingProgress(handler, 0, prebufferTarget)
 	var skippedBytes int64
 	pending := make([]byte, 0, opts.ChunkSize*2)
 	chunkIndex := 0
@@ -254,6 +263,7 @@ func runTrackPipeline(
 			}
 
 			queuedBytes += len(chunk)
+			reportBufferingProgress(handler, queuedBytes, prebufferTarget)
 			select {
 			case ch <- chunk:
 			case <-ctx.Done():
@@ -262,6 +272,7 @@ func runTrackPipeline(
 			}
 
 			if !started && queuedBytes >= opts.PrebufferBytes {
+				reportBufferingProgress(handler, prebufferTarget, prebufferTarget)
 				if err := startBackend(); err != nil {
 					close(ch)
 					return reportErr(handler, err)
@@ -303,9 +314,12 @@ func runTrackPipeline(
 			close(ch)
 			return ctx.Err()
 		}
+		queuedBytes += len(tail)
+		reportBufferingProgress(handler, queuedBytes, prebufferTarget)
 	}
 
 	if !started {
+		reportBufferingProgress(handler, prebufferTarget, prebufferTarget)
 		if err := startBackend(); err != nil {
 			close(ch)
 			return reportErr(handler, err)
@@ -324,6 +338,20 @@ func runTrackPipeline(
 		}
 	}
 	return nil
+}
+
+func reportBufferingProgress(handler EventHandler, current, total int) {
+	if handler.OnBufferingProgress == nil || total <= 0 {
+		return
+	}
+	percent := current * 100 / total
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	handler.OnBufferingProgress(uint8(percent))
 }
 
 func estimateTotalDurationMS(totalBytes int64, quality deezer.AudioQuality) uint64 {

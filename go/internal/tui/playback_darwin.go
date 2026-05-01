@@ -76,7 +76,7 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 	defer close(s.done)
 
 	ctx := context.Background()
-	prepared, err := prebuffer.TakeOrPrepare(ctx, client, trackID, quality)
+	prepared, err := prebuffer.TakeOrPrepare(ctx, client, trackID, quality, handler.OnBufferingProgress)
 	if err != nil {
 		s.done <- err
 		return
@@ -450,13 +450,16 @@ func (s *darwinPrebufferStore) Prebuffer(ctx context.Context, client *deezer.Cli
 	go s.runJob(jobCtx, client, job)
 }
 
-func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer.Client, trackID string, quality deezer.AudioQuality) (*darwinPreparedTrack, error) {
+func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer.Client, trackID string, quality deezer.AudioQuality, onBufferingProgress func(uint8)) (*darwinPreparedTrack, error) {
 	for {
 		s.mu.Lock()
 		if s.current != nil && s.current.TrackID == trackID && s.current.Quality == quality {
 			prepared := s.current
 			s.current = nil
 			s.mu.Unlock()
+			if onBufferingProgress != nil {
+				onBufferingProgress(100)
+			}
 			return prepared, nil
 		}
 		if s.current != nil && (s.current.TrackID != trackID || s.current.Quality != quality) {
@@ -468,6 +471,9 @@ func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer
 		if s.inflight != nil && s.inflight.trackID == trackID && s.inflight.quality == quality {
 			job := s.inflight
 			s.mu.Unlock()
+			if onBufferingProgress != nil {
+				onBufferingProgress(80)
+			}
 			<-job.done
 			if job.err != nil {
 				return nil, job.err
@@ -479,7 +485,7 @@ func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer
 			s.inflight = nil
 		}
 		s.mu.Unlock()
-		prepared, err := prepareDarwinTrackFile(ctx, client, trackID, quality)
+		prepared, err := prepareDarwinTrackFile(ctx, client, trackID, quality, onBufferingProgress)
 		if err != nil {
 			return nil, err
 		}
@@ -490,7 +496,7 @@ func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer
 func (s *darwinPrebufferStore) runJob(ctx context.Context, client *deezer.Client, job *darwinPrebufferJob) {
 	defer close(job.done)
 
-	result, err := prepareDarwinTrackFile(ctx, client, job.trackID, job.quality)
+	result, err := prepareDarwinTrackFile(ctx, client, job.trackID, job.quality, nil)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -523,14 +529,23 @@ func (s *darwinPrebufferStore) clearLocked() {
 	s.current = nil
 }
 
-func prepareDarwinTrackFile(ctx context.Context, client *deezer.Client, trackID string, quality deezer.AudioQuality) (*darwinPreparedTrack, error) {
+func prepareDarwinTrackFile(ctx context.Context, client *deezer.Client, trackID string, quality deezer.AudioQuality, onBufferingProgress func(uint8)) (*darwinPreparedTrack, error) {
+	if onBufferingProgress != nil {
+		onBufferingProgress(0)
+	}
 	if _, err := client.FetchAPIToken(ctx); err != nil {
 		return nil, err
+	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(10)
 	}
 
 	meta, err := client.FetchTrackMetadata(ctx, trackID)
 	if err != nil {
 		return nil, err
+	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(25)
 	}
 
 	signedURL, err := client.FetchMediaURL(ctx, deezer.MediaRequest{
@@ -540,15 +555,24 @@ func prepareDarwinTrackFile(ctx context.Context, client *deezer.Client, trackID 
 	if err != nil {
 		return nil, err
 	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(40)
+	}
 
 	encrypted, err := client.FetchEncryptedBytesFromSignedURL(ctx, signedURL)
 	if err != nil {
 		return nil, err
 	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(80)
+	}
 
 	decrypted, err := deezer.DecryptAudioStream(meta.ID, encrypted)
 	if err != nil {
 		return nil, err
+	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(90)
 	}
 
 	file, err := os.CreateTemp("", "deezer-tui-*"+qualityExtension(quality))
@@ -563,6 +587,9 @@ func prepareDarwinTrackFile(ctx context.Context, client *deezer.Client, trackID 
 	if err := file.Close(); err != nil {
 		_ = os.Remove(file.Name())
 		return nil, err
+	}
+	if onBufferingProgress != nil {
+		onBufferingProgress(100)
 	}
 
 	return &darwinPreparedTrack{

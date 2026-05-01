@@ -69,6 +69,11 @@ type playbackTrackChangedMsg struct {
 	initialMS uint64
 }
 
+type bufferingProgressMsg struct {
+	playID  int
+	percent uint8
+}
+
 type playbackProgressMsg struct {
 	playID    int
 	currentMS uint64
@@ -95,25 +100,26 @@ type artworkLoadedMsg struct {
 type loadingTickMsg struct{}
 
 type Model struct {
-	app            *app.App
-	loader         Loader
-	runtime        PlayerRuntime
-	session        PlaybackSession
-	playbackEvents chan tea.Msg
-	progressBaseMS uint64
-	progressSince  time.Time
-	progressActive bool
-	pauseRequested bool
-	saveConfig     func(config.Config) error
-	artworkURL     string
-	artworkANSI    string
-	artCache       map[string]string
-	width          int
-	height         int
-	nextPlaybackID int
-	currentPlayID  int
-	ready          bool
-	loadingFrame   int
+	app              *app.App
+	loader           Loader
+	runtime          PlayerRuntime
+	session          PlaybackSession
+	playbackEvents   chan tea.Msg
+	progressBaseMS   uint64
+	progressSince    time.Time
+	progressActive   bool
+	bufferingPercent *int
+	pauseRequested   bool
+	saveConfig       func(config.Config) error
+	artworkURL       string
+	artworkANSI      string
+	artCache         map[string]string
+	width            int
+	height           int
+	nextPlaybackID   int
+	currentPlayID    int
+	ready            bool
+	loadingFrame     int
 }
 
 func New() Model {
@@ -258,6 +264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.SetVolume(float32(m.app.Volume) / 100)
 		m.app.IsPlaying = true
 		m.progressActive = false
+		m.bufferingPercent = intPtr(0)
 		m.progressBaseMS = 0
 		m.progressSince = time.Time{}
 		m.app.StatusMessage = "Buffering..."
@@ -270,6 +277,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			waitPlaybackCmd(msg.playID, msg.session),
 			listenPlaybackEventCmd(m.playbackEvents),
 		)
+	case bufferingProgressMsg:
+		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
+			return m, nil
+		}
+		percent := int(msg.percent)
+		m.bufferingPercent = &percent
+		m.app.StatusMessage = fmt.Sprintf("Buffering %d%%", percent)
+		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackTrackChangedMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
 			return m, nil
@@ -287,6 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			TotalMS:     totalMS,
 			AlbumArtURL: msg.meta.AlbumArtURL,
 		}
+		m.bufferingPercent = nil
 		m.artworkANSI = ""
 		m.artworkURL = ""
 		if msg.meta.AlbumArtURL != nil && strings.TrimSpace(*msg.meta.AlbumArtURL) != "" {
@@ -330,6 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.session = nil
 		m.progressActive = false
+		m.bufferingPercent = nil
 		m.progressSince = time.Time{}
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			m.app.IsPlaying = false
@@ -868,6 +885,7 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 		m.session = nil
 	}
 	m.progressActive = false
+	m.bufferingPercent = intPtr(0)
 	m.progressBaseMS = 0
 	m.progressSince = time.Time{}
 	m.pauseRequested = false
@@ -1203,22 +1221,42 @@ func (m Model) renderFixedBlock(content string, width, height int) string {
 }
 
 func (m Model) renderArtworkSlot(content string, width, height int) string {
-	art := m.renderFixedBlock(content, 14, 7)
-	lines := strings.Split(art, "\n")
+	lines := strings.Split(content, "\n")
+	for len(lines) < 7 {
+		lines = append(lines, "")
+	}
 	out := make([]string, 0, height)
 	topPad := 1
 	bottomPad := 1
 	sidePad := 1
 	for i := 0; i < topPad; i++ {
-		out = append(out, strings.Repeat(" ", width))
+		out = append(out, paint(strings.Repeat(" ", width), "", gruvboxBg0))
 	}
-	for _, line := range lines {
-		out = append(out, strings.Repeat(" ", sidePad)+fitToWidth(line, 14)+strings.Repeat(" ", sidePad))
+	for i := 0; i < 7; i++ {
+		line := fitArtworkLine(lines[i], 14)
+		out = append(out, paint(strings.Repeat(" ", sidePad), "", gruvboxBg0)+line+paint(strings.Repeat(" ", sidePad), "", gruvboxBg0))
 	}
 	for i := 0; i < bottomPad; i++ {
-		out = append(out, strings.Repeat(" ", width))
+		out = append(out, paint(strings.Repeat(" ", width), "", gruvboxBg0))
 	}
 	return strings.Join(out, "\n")
+}
+
+func fitArtworkLine(line string, width int) string {
+	line = stripTrailingSGR(truncate(line, width))
+	pad := max(0, width-textWidth(line))
+	return line + baseBackgroundReset() + strings.Repeat(" ", pad)
+}
+
+func stripTrailingSGR(s string) string {
+	if !strings.HasSuffix(s, "m") {
+		return s
+	}
+	idx := strings.LastIndex(s, "\x1b[")
+	if idx < 0 {
+		return s
+	}
+	return s[:idx]
 }
 
 func (m Model) renderTextSlot(content string, width, height, padX, padY int) string {
@@ -1276,6 +1314,9 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 		handler := player.EventHandler{
 			OnTrackChanged: func(meta deezer.TrackMetadata, q deezer.AudioQuality, initialMS uint64) {
 				events <- playbackTrackChangedMsg{playID: playID, meta: meta, quality: q, initialMS: initialMS}
+			},
+			OnBufferingProgress: func(percent uint8) {
+				events <- bufferingProgressMsg{playID: playID, percent: percent}
 			},
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
 				events <- playbackProgressMsg{playID: playID, currentMS: currentMS, totalMS: totalMS}
@@ -1972,8 +2013,12 @@ func hexToANSI(hex string, mode int) string {
 func (m Model) displayState() string {
 	status := strings.TrimSpace(m.app.StatusMessage)
 	switch {
+	case m.bufferingPercent != nil:
+		return fmt.Sprintf("Buffering %d%%", *m.bufferingPercent)
 	case strings.EqualFold(status, "Buffering..."):
 		return "Buffering"
+	case strings.HasPrefix(status, "Buffering "):
+		return status
 	case strings.EqualFold(status, "Paused"):
 		return "Paused"
 	case strings.EqualFold(status, "Playing"):

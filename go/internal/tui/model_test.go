@@ -451,6 +451,52 @@ func TestDisplayStateUsesStatusMessage(t *testing.T) {
 	}
 }
 
+func TestBufferingProgressShowsPercentage(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.currentPlayID = 7
+
+	nextModel, _ := model.Update(bufferingProgressMsg{playID: 7, percent: 42})
+	updated := nextModel.(Model)
+	if got := updated.displayState(); got != "Buffering 42%" {
+		t.Fatalf("expected buffering percentage, got %q", got)
+	}
+
+	nextModel, _ = updated.Update(playbackTrackChangedMsg{
+		playID:  7,
+		meta:    deezer.TrackMetadata{ID: "1", Title: "Song", Artist: "Artist"},
+		quality: deezer.AudioQuality320,
+	})
+	updated = nextModel.(Model)
+	if updated.bufferingPercent != nil {
+		t.Fatal("expected buffering percentage to clear after track metadata arrives")
+	}
+}
+
+func TestBufferingProgressKeepsListeningForTrackChanged(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.currentPlayID = 7
+	model.playbackEvents <- playbackTrackChangedMsg{
+		playID:  7,
+		meta:    deezer.TrackMetadata{ID: "1", Title: "Loaded Song", Artist: "Artist"},
+		quality: deezer.AudioQuality320,
+	}
+
+	nextModel, cmd := model.Update(bufferingProgressMsg{playID: 7, percent: 42})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected buffering progress to keep listening for playback events")
+	}
+
+	nextModel, _ = updated.Update(cmd())
+	updated = nextModel.(Model)
+	if updated.app.NowPlaying == nil || updated.app.NowPlaying.Title != "Loaded Song" {
+		t.Fatal("expected track changed event after buffering progress to update now playing")
+	}
+	if updated.bufferingPercent != nil {
+		t.Fatal("expected buffering percentage to clear after track changed event")
+	}
+}
+
 func TestRenderArtworkANSIProducesBlockGrid(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
@@ -654,6 +700,19 @@ func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
 	view := model.renderStatusLine()
 	if !strings.Contains(view, "NO ART") || !strings.Contains(view, "+--------+") {
 		t.Fatal("expected default artwork placeholder")
+	}
+}
+
+func TestArtworkSlotDoesNotLeakCachedThemeBackground(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	applyTheme(config.ThemeAetheria)
+
+	slot := model.renderArtworkSlot("X\x1b[39;48;2;40;40;40m", 16, 9)
+	if strings.Contains(slot, "48;2;40;40;40") {
+		t.Fatal("did not expect cached artwork reset background to leak into slot")
+	}
+	if !strings.Contains(slot, "48;2;21;17;31") {
+		t.Fatal("expected artwork slot padding to use current theme background")
 	}
 }
 

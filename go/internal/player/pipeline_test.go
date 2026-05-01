@@ -89,6 +89,7 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 	var stopped atomic.Bool
 	var progressCurrent atomic.Uint64
 	var progressTotal atomic.Uint64
+	var bufferingMax atomic.Uint32
 
 	session := StartTrackPipeline(
 		context.Background(),
@@ -104,6 +105,14 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
 				progressCurrent.Store(currentMS)
 				progressTotal.Store(totalMS)
+			},
+			OnBufferingProgress: func(percent uint8) {
+				for {
+					current := bufferingMax.Load()
+					if uint32(percent) <= current || bufferingMax.CompareAndSwap(current, uint32(percent)) {
+						return
+					}
+				}
 			},
 			OnPlaybackStopped: func() {
 				stopped.Store(true)
@@ -134,6 +143,9 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 	}
 	if progressCurrent.Load() != 0 || progressTotal.Load() == 0 {
 		t.Fatalf("unexpected progress event current=%d total=%d", progressCurrent.Load(), progressTotal.Load())
+	}
+	if bufferingMax.Load() != 100 {
+		t.Fatalf("expected buffering to reach 100%%, got %d", bufferingMax.Load())
 	}
 
 	backend.mu.Lock()
