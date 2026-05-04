@@ -3,6 +3,8 @@ package tui
 import (
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"deezer-tui/internal/deezer"
 	"deezer-tui/internal/player"
 )
@@ -19,9 +21,18 @@ type PlayerRuntime interface {
 	Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error)
 }
 
+type PrebufferStatus int
+
+const (
+	PrebufferStatusScheduled PrebufferStatus = iota
+	PrebufferStatusLoading
+	PrebufferStatusReady
+	PrebufferStatusFailed
+)
+
 type PrebufferingRuntime interface {
 	PlayerRuntime
-	Prebuffer(trackID string, quality deezer.AudioQuality)
+	Prebuffer(trackIDs []string, quality deezer.AudioQuality, events chan<- tea.Msg)
 }
 
 type MediaControlCommandKind int

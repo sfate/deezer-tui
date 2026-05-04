@@ -20,9 +20,13 @@ import (
 
 var activePalette = colorscheme.Lookup(colorscheme.Aetheria).Palette
 
+var prebufferSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
+
 const (
-	seekStepMS               uint64 = 10_000
-	manualPlaybackStartDelay        = 90 * time.Millisecond
+	seekStepMS                uint64 = 10_000
+	manualPlaybackStartDelay         = 90 * time.Millisecond
+	prebufferWindowSize              = 20
+	prebufferCacheStatusLimit        = 20
 )
 
 type bootstrapLoadedMsg struct {
@@ -71,6 +75,7 @@ type playbackTrackChangedMsg struct {
 type bufferingProgressMsg struct {
 	playID  int
 	percent uint8
+	stage   player.BufferingStage
 }
 
 type playbackProgressMsg struct {
@@ -91,6 +96,14 @@ type playbackFinishedMsg struct {
 
 type playbackTickMsg struct{}
 
+type prebufferStatusMsg struct {
+	trackID string
+	quality deezer.AudioQuality
+	status  PrebufferStatus
+}
+
+type prebufferTickMsg struct{}
+
 type scheduledPlaybackMsg struct {
 	requestID int
 }
@@ -107,35 +120,37 @@ type mediaControlCommandMsg struct {
 }
 
 type Model struct {
-	app              *app.App
-	loader           Loader
-	runtime          PlayerRuntime
-	session          PlaybackSession
-	playbackEvents   chan tea.Msg
-	progressBaseMS   uint64
-	progressSince    time.Time
-	progressActive   bool
-	bufferingPercent *int
-	pauseRequested   bool
-	saveConfig       func(config.Config) error
-	artworkURL       string
-	artworkANSI      string
-	artCache         map[string]string
-	width            int
-	height           int
-	nextPlaybackID   int
-	currentPlayID    int
-	playbackRequest  int
-	pendingTrackID   string
-	pendingQuality   deezer.AudioQuality
-	pendingSeekMS    uint64
-	pendingReset     bool
-	currentTrackID   string
-	currentQuality   deezer.AudioQuality
-	playbackRetries  int
-	favoritesSortAsc bool
-	ready            bool
-	loadingFrame     int
+	app               *app.App
+	loader            Loader
+	runtime           PlayerRuntime
+	session           PlaybackSession
+	playbackEvents    chan tea.Msg
+	progressBaseMS    uint64
+	progressSince     time.Time
+	progressActive    bool
+	bufferingPercent  *int
+	pauseRequested    bool
+	saveConfig        func(config.Config) error
+	artworkURL        string
+	artworkANSI       string
+	artCache          map[string]string
+	width             int
+	height            int
+	nextPlaybackID    int
+	currentPlayID     int
+	playbackRequest   int
+	pendingTrackID    string
+	pendingQuality    deezer.AudioQuality
+	pendingSeekMS     uint64
+	pendingReset      bool
+	currentTrackID    string
+	currentQuality    deezer.AudioQuality
+	playbackRetries   int
+	favoritesSortAsc  bool
+	ready             bool
+	loadingFrame      int
+	prebufferStatuses map[string]PrebufferStatus
+	prebufferReady    []string
 }
 
 func New() Model {
@@ -161,13 +176,15 @@ func NewWithConfig(cfg config.Config) Model {
 
 	state.StatusMessage = status
 	return Model{
-		app:            state,
-		loader:         loader,
-		runtime:        newPlayerRuntime(loader),
-		playbackEvents: make(chan tea.Msg, 32),
-		saveConfig:     config.Save,
-		artCache:       map[string]string{},
-		ready:          loader == nil,
+		app:               state,
+		loader:            loader,
+		runtime:           newPlayerRuntime(loader),
+		playbackEvents:    make(chan tea.Msg, 32),
+		saveConfig:        config.Save,
+		artCache:          map[string]string{},
+		prebufferStatuses: map[string]PrebufferStatus{},
+		prebufferReady:    []string{},
+		ready:             loader == nil,
 	}
 }
 
@@ -180,13 +197,15 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		state.StatusMessage = "No Deezer loader configured"
 	}
 	return Model{
-		app:            state,
-		loader:         loader,
-		runtime:        newPlayerRuntime(loader),
-		playbackEvents: make(chan tea.Msg, 32),
-		saveConfig:     config.Save,
-		artCache:       map[string]string{},
-		ready:          loader == nil,
+		app:               state,
+		loader:            loader,
+		runtime:           newPlayerRuntime(loader),
+		playbackEvents:    make(chan tea.Msg, 32),
+		saveConfig:        config.Save,
+		artCache:          map[string]string{},
+		prebufferStatuses: map[string]PrebufferStatus{},
+		prebufferReady:    []string{},
+		ready:             loader == nil,
 	}
 }
 
@@ -225,10 +244,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if result.AutoplayTrackID != nil {
 				return m, m.startTrackPlayback(*result.AutoplayTrackID)
 			}
+			var prebufferCmd tea.Cmd
 			if oldQueueLen < len(m.app.QueueTracks) {
-				m.prebufferTrack(m.app.QueueTracks[oldQueueLen].ID)
+				prebufferCmd = m.prebufferQueueWindowFrom(oldQueueLen)
 			}
-			return m, nil
+			return m, prebufferCmd
 		}
 
 		m.app.CurrentPlaylistID = stringPtr(msg.id)
@@ -239,9 +259,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 			m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", msg.title, len(msg.tracks))
 			if trackID != nil {
+				_ = m.prebufferQueueWindowFrom(1)
 				return m, m.startTrackPlayback(*trackID)
 			}
-			return m, nil
+			return m, m.prebufferQueueWindowFrom(0)
 		}
 
 		m.loadCollection(msg.id, msg.title, msg.tracks)
@@ -249,7 +270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id == "__home__" {
 			m.app.ActivePanel = app.ActivePanelNavigation
 		}
-		return m, nil
+		return m, m.prebufferTrackWindowFrom(msg.tracks, 0)
 	case loadFailedMsg:
 		m.app.StatusMessage = msg.message
 		m.app.FlowLoadingMore = false
@@ -262,6 +283,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadingTickCmd()
 		}
 		return m, nil
+	case prebufferStatusMsg:
+		if msg.quality != qualityFromConfig(m.app.Config.DefaultQuality) {
+			return m, listenPlaybackEventCmd(m.playbackEvents)
+		}
+		m.setPrebufferStatus(msg.trackID, msg.quality, msg.status)
+		if msg.status == PrebufferStatusLoading {
+			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), prebufferTickCmd())
+		}
+		return m, listenPlaybackEventCmd(m.playbackEvents)
+	case prebufferTickMsg:
+		if !m.hasLoadingPrebuffer() {
+			return m, nil
+		}
+		m.loadingFrame = (m.loadingFrame + 1) % len(prebufferSpinnerFrames)
+		return m, prebufferTickCmd()
 	case mediaControlCommandMsg:
 		return m, tea.Batch(m.handleMediaControlCommand(msg.command), m.listenMediaControlCmd())
 	case searchLoadedMsg:
@@ -316,7 +352,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		percent := int(msg.percent)
 		m.bufferingPercent = &percent
-		m.app.StatusMessage = fmt.Sprintf("Buffering %d%%", percent)
+		m.app.StatusMessage = bufferingStatusMessage(percent, msg.stage)
 		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case playbackTrackChangedMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
@@ -334,6 +370,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			CurrentMS:   msg.initialMS,
 			TotalMS:     totalMS,
 			AlbumArtURL: msg.meta.AlbumArtURL,
+		}
+		if _, ok := m.runtime.(PrebufferingRuntime); ok {
+			m.setPrebufferStatus(msg.meta.ID, msg.quality, PrebufferStatusReady)
 		}
 		m.bufferingPercent = nil
 		m.progressBaseMS = msg.initialMS
@@ -1368,9 +1407,7 @@ func (m *Model) nextPlaybackCommandForAutoTransition() tea.Cmd {
 
 func (m *Model) maybePrebufferNextTrack() tea.Cmd {
 	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
-		if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
-			runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
-		}
+		m.cancelPrebufferWindow()
 		return nil
 	}
 
@@ -1380,21 +1417,16 @@ func (m *Model) maybePrebufferNextTrack() tea.Cmd {
 			return cmd
 		}
 		if m.app.RepeatMode == app.RepeatModeAll && len(m.app.QueueTracks) > 0 {
-			m.prebufferTrack(m.app.QueueTracks[0].ID)
-			return nil
+			return m.prebufferQueueWindowFrom(0)
 		}
 		if m.app.RepeatMode == app.RepeatModeOne && *m.app.QueueIndex >= 0 && *m.app.QueueIndex < len(m.app.QueueTracks) {
-			m.prebufferTrack(m.app.QueueTracks[*m.app.QueueIndex].ID)
-			return nil
+			return m.prebufferQueueWindowFrom(*m.app.QueueIndex)
 		}
-		if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
-			runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
-		}
+		m.cancelPrebufferWindow()
 		return nil
 	}
 
-	m.prebufferTrack(m.app.QueueTracks[nextIndex].ID)
-	return nil
+	return m.prebufferQueueWindowFrom(nextIndex)
 }
 
 func (m *Model) maybeLoadMoreFlowForTail() tea.Cmd {
@@ -1406,12 +1438,96 @@ func (m *Model) maybeLoadMoreFlowForTail() tea.Cmd {
 	return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, false)
 }
 
-func (m *Model) prebufferTrack(trackID string) {
+func (m *Model) prebufferQueueWindowFrom(start int) tea.Cmd {
+	return m.prebufferTrackWindowFrom(m.app.QueueTracks, start)
+}
+
+func (m *Model) prebufferTrackWindowFrom(tracks []app.Track, start int) tea.Cmd {
 	runtime, ok := m.runtime.(PrebufferingRuntime)
 	if !ok {
+		return nil
+	}
+	if start < 0 || start >= len(tracks) {
+		runtime.Prebuffer(nil, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
+		return nil
+	}
+	end := min(len(tracks), start+prebufferWindowSize)
+	trackIDs := make([]string, 0, end-start)
+	for _, track := range tracks[start:end] {
+		if strings.TrimSpace(track.ID) == "" {
+			continue
+		}
+		trackIDs = append(trackIDs, track.ID)
+	}
+	quality := qualityFromConfig(m.app.Config.DefaultQuality)
+	for _, trackID := range trackIDs {
+		m.setPrebufferStatus(trackID, quality, PrebufferStatusScheduled)
+	}
+	runtime.Prebuffer(trackIDs, quality, m.playbackEvents)
+	if len(trackIDs) > 0 {
+		return tea.Batch(prebufferTickCmd(), listenPlaybackEventCmd(m.playbackEvents))
+	}
+	return nil
+}
+
+func (m *Model) cancelPrebufferWindow() {
+	if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
+		runtime.Prebuffer(nil, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
+	}
+}
+
+func (m *Model) setPrebufferStatus(trackID string, quality deezer.AudioQuality, status PrebufferStatus) {
+	if strings.TrimSpace(trackID) == "" {
 		return
 	}
-	runtime.Prebuffer(trackID, qualityFromConfig(m.app.Config.DefaultQuality))
+	if m.prebufferStatuses == nil {
+		m.prebufferStatuses = map[string]PrebufferStatus{}
+	}
+	key := prebufferKey(trackID, quality)
+	if current, ok := m.prebufferStatuses[key]; ok && current == PrebufferStatusReady && status != PrebufferStatusFailed {
+		return
+	}
+	m.prebufferStatuses[key] = status
+	if status == PrebufferStatusReady {
+		m.rememberReadyPrebuffer(key)
+	}
+}
+
+func (m *Model) rememberReadyPrebuffer(key string) {
+	for _, existing := range m.prebufferReady {
+		if existing == key {
+			return
+		}
+	}
+	m.prebufferReady = append(m.prebufferReady, key)
+	for len(m.prebufferReady) > prebufferCacheStatusLimit {
+		evict := m.prebufferReady[0]
+		m.prebufferReady = m.prebufferReady[1:]
+		if status, ok := m.prebufferStatuses[evict]; ok && status == PrebufferStatusReady {
+			delete(m.prebufferStatuses, evict)
+		}
+	}
+}
+
+func (m Model) prebufferStatus(trackID string) (PrebufferStatus, bool) {
+	if strings.TrimSpace(trackID) == "" || m.prebufferStatuses == nil {
+		return PrebufferStatusScheduled, false
+	}
+	status, ok := m.prebufferStatuses[prebufferKey(trackID, qualityFromConfig(m.app.Config.DefaultQuality))]
+	return status, ok
+}
+
+func (m Model) hasLoadingPrebuffer() bool {
+	for _, status := range m.prebufferStatuses {
+		if status == PrebufferStatusLoading {
+			return true
+		}
+	}
+	return false
+}
+
+func prebufferKey(trackID string, quality deezer.AudioQuality) string {
+	return string(quality) + "\x00" + trackID
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {
@@ -1566,7 +1682,8 @@ func (m Model) renderMain(width, height int) string {
 func (m Model) renderQueue(width, height int) string {
 	contentWidth := max(16, width-4)
 	metaWidth := max(16, contentWidth-2)
-	queueItemWidth := max(16, contentWidth-4)
+	queueIndicatorWidth := 2
+	queueRowTextWidth := max(8, contentWidth-2)
 	lines := []string{
 		kvLine("State", ternary(m.app.IsPlaying, "Playing", "Stopped"), activePalette.Green),
 		kvLine("Volume", fmt.Sprintf("%d%%", m.app.Volume), activePalette.Aqua),
@@ -1597,19 +1714,73 @@ func (m Model) renderQueue(width, height int) string {
 		end := min(len(m.app.Queue), start+visibleRows)
 		for i := start; i < end; i++ {
 			item := m.app.Queue[i]
-			line := fmt.Sprintf(" %02d %s", i+1, truncate(item, queueItemWidth))
-			if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
-				line = trackRow(line, true, activePalette.Orange)
+			indicator := m.queuePrebufferIndicator(i)
+			prefix := fmt.Sprintf(" %02d ", i+1)
+			itemWidth := max(1, queueRowTextWidth-textWidth(prefix)-queueIndicatorWidth)
+			line := prefix + fitToWidth(item, itemWidth)
+			if m.app.QueueIndex != nil && i == *m.app.QueueIndex && m.app.IsPlaying {
+				line = playingQueueRow(line, indicator, queueIndicatorWidth)
+			} else if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
+				line = selectedQueueRow(line, indicator, queueIndicatorWidth)
 			} else if m.app.QueueIndex != nil && i == *m.app.QueueIndex {
-				line = paint("▶"+line[1:], activePalette.BackgroundHard, activePalette.Aqua)
+				line = queueRow(line, "▶ ", activePalette.Aqua, indicator, queueIndicatorWidth)
 			} else {
-				line = paint(line, activePalette.Text, "")
+				line = queueRow(line, "  ", activePalette.Text, indicator, queueIndicatorWidth)
 			}
 			lines = append(lines, line)
 		}
 	}
 
 	return m.renderPanel("Queue", strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelQueue || m.app.ActivePanel == app.ActivePanelPlayer || m.app.ActivePanel == app.ActivePanelPlayerInfo || m.app.ActivePanel == app.ActivePanelPlayerProgress, width, height)
+}
+
+type queueIndicator struct {
+	glyph string
+	fg    string
+}
+
+func playingQueueRow(text string, indicator queueIndicator, indicatorWidth int) string {
+	indicator.glyph = "▶"
+	return paint("▶ ", activePalette.BackgroundHard, activePalette.Aqua) +
+		paint(strings.TrimLeft(text, " "), activePalette.BackgroundHard, activePalette.Aqua) +
+		paint(fitToWidth(indicator.glyph, indicatorWidth), activePalette.BackgroundHard, activePalette.Aqua)
+}
+
+func selectedQueueRow(text string, indicator queueIndicator, indicatorWidth int) string {
+	return paint("> ", activePalette.Orange, "") +
+		paint(strings.TrimLeft(text, " "), activePalette.TextStrong, "") +
+		paint(fitToWidth(indicator.glyph, indicatorWidth), indicator.fg, "")
+}
+
+func queueRow(text, prefix, accent string, indicator queueIndicator, indicatorWidth int) string {
+	return paint(prefix, accent, "") +
+		paint(strings.TrimLeft(text, " "), activePalette.Text, "") +
+		paint(fitToWidth(indicator.glyph, indicatorWidth), indicator.fg, "")
+}
+
+func (m Model) queuePrebufferIndicator(index int) queueIndicator {
+	if m.app.QueueIndex != nil && index == *m.app.QueueIndex && m.app.IsPlaying {
+		return queueIndicator{glyph: "▶", fg: activePalette.Aqua}
+	}
+	if index < 0 || index >= len(m.app.QueueTracks) {
+		return queueIndicator{glyph: "-", fg: activePalette.TextMuted}
+	}
+	status, ok := m.prebufferStatus(m.app.QueueTracks[index].ID)
+	if !ok {
+		return queueIndicator{glyph: "-", fg: activePalette.TextMuted}
+	}
+	switch status {
+	case PrebufferStatusScheduled:
+		return queueIndicator{glyph: "○", fg: activePalette.TextMuted}
+	case PrebufferStatusLoading:
+		return queueIndicator{glyph: prebufferSpinnerFrames[m.loadingFrame%len(prebufferSpinnerFrames)], fg: activePalette.Yellow}
+	case PrebufferStatusReady:
+		return queueIndicator{glyph: "✓", fg: activePalette.Green}
+	case PrebufferStatusFailed:
+		return queueIndicator{glyph: "×", fg: activePalette.Orange}
+	default:
+		return queueIndicator{glyph: "-", fg: activePalette.TextMuted}
+	}
 }
 
 func (m Model) renderSearchBar() string {
@@ -1852,8 +2023,8 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 			OnTrackChanged: func(meta deezer.TrackMetadata, q deezer.AudioQuality, initialMS uint64) {
 				events <- playbackTrackChangedMsg{playID: playID, meta: meta, quality: q, initialMS: initialMS}
 			},
-			OnBufferingProgress: func(percent uint8) {
-				events <- bufferingProgressMsg{playID: playID, percent: percent}
+			OnBufferingProgress: func(percent uint8, stage player.BufferingStage) {
+				events <- bufferingProgressMsg{playID: playID, percent: percent, stage: stage}
 			},
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
 				events <- playbackProgressMsg{playID: playID, currentMS: currentMS, totalMS: totalMS}
@@ -1910,6 +2081,12 @@ func playbackTickCmd() tea.Cmd {
 func loadingTickCmd() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
 		return loadingTickMsg{}
+	})
+}
+
+func prebufferTickCmd() tea.Cmd {
+	return tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg {
+		return prebufferTickMsg{}
 	})
 }
 
@@ -2163,6 +2340,13 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 func formatClock(ms uint64) string {
 	seconds := ms / 1000
 	return fmt.Sprintf("%02d:%02d", seconds/60, seconds%60)
+}
+
+func bufferingStatusMessage(percent int, stage player.BufferingStage) string {
+	if strings.TrimSpace(string(stage)) == "" {
+		return fmt.Sprintf("Buffering %d%%", percent)
+	}
+	return fmt.Sprintf("Buffering %d%% - %s", percent, stage)
 }
 
 func renderSearchTabs(category app.SearchCategory) string {
@@ -2545,12 +2729,12 @@ func hexToANSI(hex string, mode int) string {
 func (m Model) displayState() string {
 	status := strings.TrimSpace(m.app.StatusMessage)
 	switch {
-	case m.bufferingPercent != nil:
-		return fmt.Sprintf("Buffering %d%%", *m.bufferingPercent)
 	case strings.EqualFold(status, "Buffering..."):
 		return "Buffering"
 	case strings.HasPrefix(status, "Buffering "):
 		return status
+	case m.bufferingPercent != nil:
+		return fmt.Sprintf("Buffering %d%%", *m.bufferingPercent)
 	case strings.EqualFold(status, "Paused"):
 		return "Paused"
 	case strings.EqualFold(status, "Playing"):

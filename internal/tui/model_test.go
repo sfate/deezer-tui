@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ type fakePlaybackRuntime struct {
 	started     []string
 	qualities   []deezer.AudioQuality
 	seeked      []uint64
-	prebuffered []string
+	prebuffered [][]string
 	session     *fakePlaybackSession
 	startErr    error
 	mediaEvents chan MediaControlCommand
@@ -82,8 +83,14 @@ func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality,
 	return f.session, nil
 }
 
-func (f *fakePlaybackRuntime) Prebuffer(trackID string, _ deezer.AudioQuality) {
-	f.prebuffered = append(f.prebuffered, trackID)
+func (f *fakePlaybackRuntime) Prebuffer(trackIDs []string, _ deezer.AudioQuality, events chan<- tea.Msg) {
+	f.prebuffered = append(f.prebuffered, append([]string(nil), trackIDs...))
+	if events == nil {
+		return
+	}
+	for _, trackID := range trackIDs {
+		events <- prebufferStatusMsg{trackID: trackID, quality: deezer.AudioQuality320, status: PrebufferStatusLoading}
+	}
 }
 
 func (f *fakePlaybackRuntime) MediaControlEvents() <-chan MediaControlCommand {
@@ -297,6 +304,33 @@ func TestQueueRowsUseQueuePanelWidth(t *testing.T) {
 	view := model.renderQueue(80, 20)
 	if !strings.Contains(view, "Very Long Queue Track Title") {
 		t.Fatal("expected queue row to use the wider queue panel width")
+	}
+}
+
+func TestQueueRowsRenderPrebufferIndicators(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+		{ID: "3", Title: "Three", Artist: "C"},
+		{ID: "4", Title: "Four", Artist: "D"},
+		{ID: "5", Title: "Five", Artist: "E"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.IsPlaying = true
+	model.setPrebufferStatus("2", deezer.AudioQuality320, PrebufferStatusScheduled)
+	model.setPrebufferStatus("3", deezer.AudioQuality320, PrebufferStatusLoading)
+	model.setPrebufferStatus("4", deezer.AudioQuality320, PrebufferStatusReady)
+
+	view := model.renderQueue(80, 20)
+	for _, want := range []string{"▶", "○", "◐", "✓", "-"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected queue indicator %q in view", want)
+		}
+	}
+	if strings.Count(view, "▶") < 2 {
+		t.Fatal("expected currently playing queue row to show both row marker and right-side indicator")
 	}
 }
 
@@ -581,14 +615,14 @@ func TestDisplayStateUsesStatusMessage(t *testing.T) {
 	}
 }
 
-func TestBufferingProgressShowsPercentage(t *testing.T) {
+func TestBufferingProgressShowsPercentageAndStage(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.currentPlayID = 7
 
-	nextModel, _ := model.Update(bufferingProgressMsg{playID: 7, percent: 42})
+	nextModel, _ := model.Update(bufferingProgressMsg{playID: 7, percent: 42, stage: player.BufferingStageDownloading})
 	updated := nextModel.(Model)
-	if got := updated.displayState(); got != "Buffering 42%" {
-		t.Fatalf("expected buffering percentage, got %q", got)
+	if got := updated.displayState(); got != "Buffering 42% - Downloading..." {
+		t.Fatalf("expected buffering percentage and stage, got %q", got)
 	}
 
 	nextModel, _ = updated.Update(playbackTrackChangedMsg{
@@ -1490,11 +1524,99 @@ func TestPlaybackProgressPrebuffersNextQueuedTrack(t *testing.T) {
 
 	nextModel, _ := model.Update(playbackProgressMsg{playID: 3, currentMS: 0, totalMS: 180000})
 	updated := nextModel.(Model)
-	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "2" {
-		t.Fatalf("expected next queued track to be prebuffered, got %#v", runtime.prebuffered)
+	if len(runtime.prebuffered) != 1 || !slices.Equal(runtime.prebuffered[0], []string{"2", "3"}) {
+		t.Fatalf("expected next queued tracks to be prebuffered, got %#v", runtime.prebuffered)
 	}
 	if updated.app.StatusMessage != "Playing" {
 		t.Fatalf("expected playing status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestPrebufferReadyStatusSurvivesWindowShift(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 3
+	model.app.IsPlaying = true
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+		{ID: "3", Title: "Three", Artist: "C"},
+		{ID: "4", Title: "Four", Artist: "D"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A"}
+	model.setPrebufferStatus("2", deezer.AudioQuality320, PrebufferStatusReady)
+
+	nextModel, _ := model.Update(playbackProgressMsg{playID: 3, currentMS: 0, totalMS: 180000})
+	updated := nextModel.(Model)
+	status, ok := updated.prebufferStatus("2")
+	if !ok || status != PrebufferStatusReady {
+		t.Fatalf("expected ready status to survive window refresh, got %v/%t", status, ok)
+	}
+}
+
+func TestPlaybackTrackChangedMarksCurrentTrackReady(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 7
+	model.app.IsPlaying = true
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+
+	nextModel, _ := model.Update(playbackTrackChangedMsg{
+		playID:  7,
+		meta:    deezer.TrackMetadata{ID: "1", Title: "One", Artist: "A"},
+		quality: deezer.AudioQuality320,
+	})
+	updated := nextModel.(Model)
+	status, ok := updated.prebufferStatus("1")
+	if !ok || status != PrebufferStatusReady {
+		t.Fatalf("expected current track to be marked ready, got %v/%t", status, ok)
+	}
+	view := updated.renderQueue(80, 20)
+	if !strings.Contains(view, "▶") {
+		t.Fatal("expected current track indicator")
+	}
+}
+
+func TestReadyPrebufferStatusesEvictOldestWhenCacheLimitIsReached(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	for i := 1; i <= prebufferCacheStatusLimit+1; i++ {
+		model.setPrebufferStatus(fmt.Sprintf("%d", i), deezer.AudioQuality320, PrebufferStatusReady)
+	}
+	if _, ok := model.prebufferStatus("1"); ok {
+		t.Fatal("expected oldest ready status to be evicted")
+	}
+	if status, ok := model.prebufferStatus(fmt.Sprintf("%d", prebufferCacheStatusLimit+1)); !ok || status != PrebufferStatusReady {
+		t.Fatalf("expected newest ready status to remain, got %v/%t", status, ok)
+	}
+}
+
+func TestCollectionLoadPrebuffersFirstTwentyQueuedTracks(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	tracks := make([]app.Track, 25)
+	want := make([]string, 20)
+	for i := range tracks {
+		id := fmt.Sprintf("%d", i+1)
+		tracks[i] = app.Track{ID: id, Title: "Song " + id, Artist: "Artist"}
+		if i < len(want) {
+			want[i] = id
+		}
+	}
+
+	nextModel, _ := model.Update(collectionLoadedMsg{id: "playlist", title: "Playlist", tracks: tracks})
+	updated := nextModel.(Model)
+	if len(runtime.prebuffered) != 1 || !slices.Equal(runtime.prebuffered[0], want) {
+		t.Fatalf("expected first twenty tracks to prebuffer, got %#v", runtime.prebuffered)
+	}
+	if len(updated.prebufferStatuses) != 20 {
+		t.Fatalf("expected twenty prebuffer statuses, got %d", len(updated.prebufferStatuses))
 	}
 }
 
@@ -1571,8 +1693,8 @@ func TestAppendedFlowBatchPrebuffersFirstNewTrack(t *testing.T) {
 	if !updated.app.IsPlaying {
 		t.Fatal("expected background Flow append not to stop current playback")
 	}
-	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "3" {
-		t.Fatalf("expected first appended Flow track to prebuffer, got %#v", runtime.prebuffered)
+	if len(runtime.prebuffered) != 1 || !slices.Equal(runtime.prebuffered[0], []string{"3", "4"}) {
+		t.Fatalf("expected appended Flow tracks to prebuffer, got %#v", runtime.prebuffered)
 	}
 }
 
@@ -1588,7 +1710,7 @@ func TestPlaybackProgressClearsPrebufferAtQueueEnd(t *testing.T) {
 	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A"}
 
 	_, _ = model.Update(playbackProgressMsg{playID: 4, currentMS: 0, totalMS: 180000})
-	if len(runtime.prebuffered) != 1 || runtime.prebuffered[0] != "" {
+	if len(runtime.prebuffered) != 1 || len(runtime.prebuffered[0]) != 0 {
 		t.Fatalf("expected prebuffer clear at queue end, got %#v", runtime.prebuffered)
 	}
 }

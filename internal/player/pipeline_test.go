@@ -106,7 +106,7 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 				progressCurrent.Store(currentMS)
 				progressTotal.Store(totalMS)
 			},
-			OnBufferingProgress: func(percent uint8) {
+			OnBufferingProgress: func(percent uint8, _ BufferingStage) {
 				for {
 					current := bufferingMax.Load()
 					if uint32(percent) <= current || bufferingMax.CompareAndSwap(current, uint32(percent)) {

@@ -15,6 +15,16 @@ const (
 	DefaultPrebufferBytes  = 512 * 1024
 )
 
+type BufferingStage string
+
+const (
+	BufferingStageResolving   BufferingStage = "Resolving..."
+	BufferingStageDownloading BufferingStage = "Downloading..."
+	BufferingStageDecrypting  BufferingStage = "Decrypting..."
+	BufferingStagePreparing   BufferingStage = "Preparing..."
+	BufferingStageReady       BufferingStage = "Ready"
+)
+
 type MediaClient interface {
 	FetchAPIToken(ctx context.Context) (string, error)
 	FetchTrackMetadata(ctx context.Context, trackID string) (deezer.TrackMetadata, error)
@@ -35,7 +45,7 @@ type Controller interface {
 
 type EventHandler struct {
 	OnTrackChanged      func(meta deezer.TrackMetadata, quality deezer.AudioQuality, initialMS uint64)
-	OnBufferingProgress func(percent uint8)
+	OnBufferingProgress func(percent uint8, stage BufferingStage)
 	OnPlaybackProgress  func(currentMS, totalMS uint64)
 	OnPlaybackStopped   func()
 	OnError             func(error)
@@ -230,7 +240,7 @@ func runTrackPipeline(
 			prebufferTarget = remaining
 		}
 	}
-	reportBufferingProgress(handler, 0, prebufferTarget)
+	reportBufferingProgress(handler, 0, prebufferTarget, BufferingStageDownloading)
 	var skippedBytes int64
 	pending := make([]byte, 0, opts.ChunkSize*2)
 	chunkIndex := 0
@@ -263,7 +273,7 @@ func runTrackPipeline(
 			}
 
 			queuedBytes += len(chunk)
-			reportBufferingProgress(handler, queuedBytes, prebufferTarget)
+			reportBufferingProgress(handler, queuedBytes, prebufferTarget, BufferingStageDownloading)
 			select {
 			case ch <- chunk:
 			case <-ctx.Done():
@@ -272,7 +282,7 @@ func runTrackPipeline(
 			}
 
 			if !started && queuedBytes >= opts.PrebufferBytes {
-				reportBufferingProgress(handler, prebufferTarget, prebufferTarget)
+				reportBufferingProgress(handler, prebufferTarget, prebufferTarget, BufferingStageReady)
 				if err := startBackend(); err != nil {
 					close(ch)
 					return reportErr(handler, err)
@@ -315,11 +325,11 @@ func runTrackPipeline(
 			return ctx.Err()
 		}
 		queuedBytes += len(tail)
-		reportBufferingProgress(handler, queuedBytes, prebufferTarget)
+		reportBufferingProgress(handler, queuedBytes, prebufferTarget, BufferingStageDownloading)
 	}
 
 	if !started {
-		reportBufferingProgress(handler, prebufferTarget, prebufferTarget)
+		reportBufferingProgress(handler, prebufferTarget, prebufferTarget, BufferingStageReady)
 		if err := startBackend(); err != nil {
 			close(ch)
 			return reportErr(handler, err)
@@ -340,7 +350,7 @@ func runTrackPipeline(
 	return nil
 }
 
-func reportBufferingProgress(handler EventHandler, current, total int) {
+func reportBufferingProgress(handler EventHandler, current, total int, stage BufferingStage) {
 	if handler.OnBufferingProgress == nil || total <= 0 {
 		return
 	}
@@ -351,7 +361,7 @@ func reportBufferingProgress(handler EventHandler, current, total int) {
 	if percent > 100 {
 		percent = 100
 	}
-	handler.OnBufferingProgress(uint8(percent))
+	handler.OnBufferingProgress(uint8(percent), stage)
 }
 
 func estimateTotalDurationMS(totalBytes int64, quality deezer.AudioQuality) uint64 {
