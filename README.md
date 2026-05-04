@@ -2,7 +2,7 @@
 
 TUI client for Deezer, written on Go, based on Bubble Tea.
 
-![Deezer TUI Preview](images/preview.png)
+![Deezer TUI loading](images/preview-loading.png)
 
 ## Features
 
@@ -100,6 +100,10 @@ At minimum, set a valid Deezer `arl` value:
 ```
 
 The app will fill defaults for missing settings.
+
+## Preview
+
+![Deezer TUI preview](images/preview.png)
 
 ## TODO
 
