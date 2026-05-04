@@ -101,6 +101,16 @@ At minimum, set a valid Deezer `arl` value:
 
 The app will fill defaults for missing settings.
 
+## Colors
+
+Currently app has two themes: [Aetheria](https://github.com/JJDizz1L/aetheria) and [Gruvbox](https://github.com/morhetz/gruvbox).
+Theme can be set in the config file or switched in-app. The default theme is Aetheria:
+```json
+{
+  "theme": "aetheria"
+}
+```
+
 ## Preview
 
 ![Deezer TUI preview](images/preview.png)
