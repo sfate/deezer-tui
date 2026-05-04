@@ -804,7 +804,7 @@ func TestMediaControlSetPositionSeeksCurrentTrack(t *testing.T) {
 		t.Fatal("expected media set-position command")
 	}
 
-	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	_, _ = updated.Update(firstBatchMessage(cmd))
 	if len(runtime.seeked) != 1 || runtime.seeked[0] != 55_000 {
 		t.Fatalf("expected media set-position to seek to 55s, got %#v", runtime.seeked)
 	}
@@ -880,8 +880,7 @@ func TestSeekForwardRestartsCurrentTrackAtNewPosition(t *testing.T) {
 		t.Fatal("expected seek playback command")
 	}
 
-	nextModel, _ = updated.Update(firstBatchMessage(cmd))
-	updated = nextModel.(Model)
+	_, _ = updated.Update(firstBatchMessage(cmd))
 	if len(runtime.started) != 1 || runtime.started[0] != "track-1" {
 		t.Fatalf("expected current track to restart, got %#v", runtime.started)
 	}
@@ -910,8 +909,7 @@ func TestSeekBackwardClampsToStart(t *testing.T) {
 		t.Fatal("expected seek playback command")
 	}
 
-	nextModel, _ = updated.Update(firstBatchMessage(cmd))
-	updated = nextModel.(Model)
+	_, _ = updated.Update(firstBatchMessage(cmd))
 	if len(runtime.seeked) != 1 || runtime.seeked[0] != 0 {
 		t.Fatalf("expected seek to clamp to start, got %#v", runtime.seeked)
 	}
@@ -960,8 +958,7 @@ func TestQualitySwitchDownPreservesPosition(t *testing.T) {
 		t.Fatal("expected quality switch command")
 	}
 
-	nextModel, _ = updated.Update(firstBatchMessage(cmd))
-	updated = nextModel.(Model)
+	_, _ = updated.Update(firstBatchMessage(cmd))
 	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQuality128 {
 		t.Fatalf("expected switch to 128 kbps, got %#v", runtime.qualities)
 	}
@@ -990,8 +987,7 @@ func TestQualitySwitchToFlacRestartsAtBeginning(t *testing.T) {
 		t.Fatal("expected quality switch command")
 	}
 
-	nextModel, _ = updated.Update(firstBatchMessage(cmd))
-	updated = nextModel.(Model)
+	_, _ = updated.Update(firstBatchMessage(cmd))
 	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQualityFlac {
 		t.Fatalf("expected switch to FLAC, got %#v", runtime.qualities)
 	}

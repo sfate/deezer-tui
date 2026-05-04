@@ -20,7 +20,6 @@ import (
 var (
 	gruvboxBgHard = "#100c18"
 	gruvboxBg0    = "#15111f"
-	gruvboxBg1    = "#1c1629"
 	gruvboxBg3    = "#3d314a"
 	gruvboxFg0    = "#e4d4de"
 	gruvboxFg1    = "#c8b3bf"
@@ -30,7 +29,6 @@ var (
 	gruvboxAqua   = "#21c7d9"
 	gruvboxGreen  = "#21c7d9"
 	gruvboxOrange = "#e07a87"
-	gruvboxRed    = "#e06c75"
 	gruvboxPurple = "#b18bb8"
 )
 
@@ -2213,7 +2211,6 @@ func qualityLabel(q config.AudioQuality) string {
 type colorTheme struct {
 	bgHard string
 	bg0    string
-	bg1    string
 	bg3    string
 	fg0    string
 	fg1    string
@@ -2223,7 +2220,6 @@ type colorTheme struct {
 	aqua   string
 	green  string
 	orange string
-	red    string
 	purple string
 }
 
@@ -2231,7 +2227,6 @@ var colorThemes = map[config.Theme]colorTheme{
 	config.ThemeAetheria: {
 		bgHard: "#100c18",
 		bg0:    "#15111f",
-		bg1:    "#1c1629",
 		bg3:    "#3d314a",
 		fg0:    "#e4d4de",
 		fg1:    "#c8b3bf",
@@ -2241,13 +2236,11 @@ var colorThemes = map[config.Theme]colorTheme{
 		aqua:   "#21c7d9",
 		green:  "#21c7d9",
 		orange: "#e07a87",
-		red:    "#e06c75",
 		purple: "#b18bb8",
 	},
 	config.ThemeGruvbox: {
 		bgHard: "#1d2021",
 		bg0:    "#282828",
-		bg1:    "#3c3836",
 		bg3:    "#665c54",
 		fg0:    "#fbf1c7",
 		fg1:    "#ebdbb2",
@@ -2257,7 +2250,6 @@ var colorThemes = map[config.Theme]colorTheme{
 		aqua:   "#8ec07c",
 		green:  "#b8bb26",
 		orange: "#fe8019",
-		red:    "#fb4934",
 		purple: "#d3869b",
 	},
 }
@@ -2269,7 +2261,6 @@ func applyTheme(theme config.Theme) {
 	}
 	gruvboxBgHard = palette.bgHard
 	gruvboxBg0 = palette.bg0
-	gruvboxBg1 = palette.bg1
 	gruvboxBg3 = palette.bg3
 	gruvboxFg0 = palette.fg0
 	gruvboxFg1 = palette.fg1
@@ -2279,7 +2270,6 @@ func applyTheme(theme config.Theme) {
 	gruvboxAqua = palette.aqua
 	gruvboxGreen = palette.green
 	gruvboxOrange = palette.orange
-	gruvboxRed = palette.red
 	gruvboxPurple = palette.purple
 }
 
