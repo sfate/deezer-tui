@@ -260,7 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case loadingTickMsg:
 		if !m.ready {
-			m.loadingFrame = (m.loadingFrame + 1) % len(loadingLogoFrames)
+			m.loadingFrame = (m.loadingFrame + 1) % len(loadingHeartFrames)
 			return m, loadingTickCmd()
 		}
 		return m, nil
@@ -2378,29 +2378,61 @@ func (m Model) renderSettingsRows() []string {
 	return lines
 }
 
-var loadingLogoFrames = []string{
-	"▁▃▄▅▄▃▁",
-	"▂▄▆█▆▄▂",
-	"▃▅█▇█▅▃",
-	"▂▄▆█▆▄▂",
+var loadingHeartFrames = [][]string{
+	{
+		"    ██    ██    ",
+		"  ████████████  ",
+		" ██████████████ ",
+		"  ████████████  ",
+		"   ██████████   ",
+		"     ██████     ",
+		"       ██       ",
+	},
+	{
+		"   ████  ████   ",
+		" ██████████████ ",
+		"████████████████",
+		" ██████████████ ",
+		"  ████████████  ",
+		"    ████████    ",
+		"      ████      ",
+	},
+	{
+		"  ██████  ██████  ",
+		" ████████████████ ",
+		"██████████████████",
+		" ████████████████ ",
+		"  ██████████████  ",
+		"    ██████████    ",
+		"       ████       ",
+	},
+	{
+		"   ████  ████   ",
+		" ██████████████ ",
+		"████████████████",
+		" ██████████████ ",
+		"  ████████████  ",
+		"    ████████    ",
+		"      ████      ",
+	},
+}
+
+var loadingWordmark = []string{
+	"▄ ▄▖▄▖▄▖▄▖▄▖",
+	"▌▌▙▖▙▖▗▘▙▖▙▘",
+	"▙▘▙▖▙▖▙▖▙▖▌▌",
 }
 
 func (m Model) renderLoadingScreen() string {
-	logo := []string{
-		"██████╗ ███████╗███████╗███████╗███████╗██████╗    ████████╗██╗   ██╗██╗",
-		"██╔══██╗██╔════╝██╔════╝╚══███╔╝██╔════╝██╔══██╗   ╚══██╔══╝██║   ██║██║",
-		"██║  ██║█████╗  █████╗    ███╔╝ █████╗  ██████╔╝█████╗██║   ██║   ██║██║",
-		"██║  ██║██╔══╝  ██╔══╝   ███╔╝  ██╔══╝  ██╔══██╗╚════╝██║   ██║   ██║██║",
-		"██████╔╝███████╗███████╗███████╗███████╗██║  ██║      ██║   ╚██████╔╝██║",
-		"╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝      ╚═╝    ╚═════╝ ╚═╝",
-	}
-
-	lines := make([]string, 0, len(logo)+3)
-	for _, line := range logo {
-		lines = append(lines, centerText(paint(line, gruvboxAqua, ""), m.width))
+	frame := loadingHeartFrames[m.loadingFrame%len(loadingHeartFrames)]
+	lines := make([]string, 0, len(frame)+len(loadingWordmark)+3)
+	for _, line := range frame {
+		lines = append(lines, centerText(paint(line, gruvboxPurple, ""), m.width))
 	}
 	lines = append(lines, "")
-	lines = append(lines, centerText(paint(loadingLogoFrames[m.loadingFrame], gruvboxOrange, ""), m.width))
+	for _, line := range loadingWordmark {
+		lines = append(lines, centerText(paint(line, gruvboxAqua, ""), m.width))
+	}
 	lines = append(lines, centerText(paint(strings.TrimSpace(m.app.StatusMessage), gruvboxFg4, ""), m.width))
 	return verticalCenter(strings.Join(lines, "\n"), m.height)
 }

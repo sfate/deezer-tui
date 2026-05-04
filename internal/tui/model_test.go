@@ -147,8 +147,8 @@ func TestViewShowsLoadingLogoBeforeInitialCollectionLoad(t *testing.T) {
 	model.ready = false
 
 	view := model.View().Content
-	if !strings.Contains(view, "██████") {
-		t.Fatal("expected loading logo in startup view")
+	if !strings.Contains(view, "████") || !strings.Contains(view, "▄ ▄▖▄▖▄▖▄▖▄▖") {
+		t.Fatal("expected filled wave-heart loading mark in startup view")
 	}
 }
 

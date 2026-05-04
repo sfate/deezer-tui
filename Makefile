@@ -1,7 +1,7 @@
 .PHONY: lint audit test build ci
 
 BINARY_NAME ?= deezer-tui
-BUILD_OUTPUT ?= target/release/$(BINARY_NAME)
+BUILD_OUTPUT ?= bin/$(BINARY_NAME)
 TEST_DIR ?= ./...
 TEST_CASE ?= ^.+$
 UNAME_S := $(shell uname -s)

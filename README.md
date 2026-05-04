@@ -66,7 +66,7 @@ On macOS, `make build` also precompiles the native playback helper into the user
 The binary is written to:
 
 ```bash
-./target/release/deezer-tui
+./bin/deezer-tui
 ```
 
 For a direct development run:
