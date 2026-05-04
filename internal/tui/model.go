@@ -12,25 +12,13 @@ import (
 	cellansi "github.com/charmbracelet/x/ansi"
 
 	"deezer-tui/internal/app"
+	"deezer-tui/internal/colorscheme"
 	"deezer-tui/internal/config"
 	"deezer-tui/internal/deezer"
 	"deezer-tui/internal/player"
 )
 
-var (
-	gruvboxBgHard = "#100c18"
-	gruvboxBg0    = "#15111f"
-	gruvboxBg3    = "#3d314a"
-	gruvboxFg0    = "#e4d4de"
-	gruvboxFg1    = "#c8b3bf"
-	gruvboxFg4    = "#8f7383"
-	gruvboxYellow = "#f3c969"
-	gruvboxBlue   = "#8f7383"
-	gruvboxAqua   = "#21c7d9"
-	gruvboxGreen  = "#21c7d9"
-	gruvboxOrange = "#e07a87"
-	gruvboxPurple = "#b18bb8"
-)
+var activePalette = colorscheme.Lookup(colorscheme.Aetheria).Palette
 
 const seekStepMS uint64 = 10_000
 
@@ -143,7 +131,7 @@ func New() Model {
 }
 
 func NewWithConfig(cfg config.Config) Model {
-	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 
@@ -172,7 +160,7 @@ func NewWithConfig(cfg config.Config) Model {
 }
 
 func NewWithLoader(cfg config.Config, loader Loader) Model {
-	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 	state.StatusMessage = "Loading Deezer library..."
@@ -1055,9 +1043,9 @@ func (m *Model) cycleRepeatMode() {
 func (m *Model) adjustSelectedSetting(direction int) {
 	switch derefOrZero(m.app.SettingsState.Selected()) {
 	case 0:
-		m.app.Config.Theme = nextTheme(m.app.Config.Theme, direction)
+		m.app.Config.Theme = colorscheme.Next(m.app.Config.Theme, direction)
 		applyTheme(m.app.Config.Theme)
-		m.app.StatusMessage = fmt.Sprintf("Theme: %s", themeLabel(m.app.Config.Theme))
+		m.app.StatusMessage = fmt.Sprintf("Theme: %s", colorscheme.Label(m.app.Config.Theme))
 		m.persistConfig()
 	case 1:
 		m.adjustVolume(direction * 5)
@@ -1406,17 +1394,17 @@ func (m *Model) handlePlaybackFinished() tea.Cmd {
 }
 
 func (m Model) renderSidebar(width, height int) string {
-	nav := []string{sectionHeading("Browse", gruvboxBlue)}
+	nav := []string{sectionHeading("Browse", activePalette.Blue)}
 	items := []string{"Home", "Flow", "Explore", "Favorites", "Settings"}
 	selectedNav := derefOrZero(m.app.NavState.Selected())
 	for i, item := range items {
 		selected := i == selectedNav && m.app.ActivePanel == app.ActivePanelNavigation
-		nav = append(nav, listRow(item, selected, gruvboxBlue))
+		nav = append(nav, listRow(item, selected, activePalette.Blue))
 	}
-	nav = append(nav, "", sectionHeading("Library", gruvboxPurple))
+	nav = append(nav, "", sectionHeading("Library", activePalette.Purple))
 	for i, pl := range m.app.Playlists {
 		selected := i == derefOrZero(m.app.PlaylistState.Selected()) && m.app.ActivePanel == app.ActivePanelPlaylists
-		nav = append(nav, listRow(truncate(pl.Title, 20), selected, gruvboxPurple))
+		nav = append(nav, listRow(truncate(pl.Title, 20), selected, activePalette.Purple))
 		if i >= height-8 {
 			break
 		}
@@ -1439,7 +1427,7 @@ func (m Model) renderMain(width, height int) string {
 	if m.app.ViewingSettings {
 		lines = append(lines, m.renderSettingsRows()...)
 	} else if len(m.app.CurrentTracks) == 0 {
-		lines = append(lines, "", paint(" No tracks loaded", gruvboxFg4, ""))
+		lines = append(lines, "", paint(" No tracks loaded", activePalette.TextMuted, ""))
 	} else {
 		if m.app.ShowingSearchResult {
 			lines = append(lines, renderSearchTabs(m.app.SearchCategory))
@@ -1449,39 +1437,39 @@ func (m Model) renderMain(width, height int) string {
 		if m.app.ShowingSearchResult {
 			switch m.app.SearchCategory {
 			case app.SearchCategoryTracks:
-				lines = append(lines, tableHeader(" #  Title                               Artist", gruvboxOrange))
-				lines = append(lines, separatorLine(58, gruvboxBg3))
+				lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
+				lines = append(lines, separatorLine(58, activePalette.Border))
 				for i, track := range m.app.CurrentTracks {
 					label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-					lines = append(lines, trackRow(label, selected == i, gruvboxAqua))
+					lines = append(lines, trackRow(label, selected == i, activePalette.Aqua))
 				}
 			case app.SearchCategoryPlaylists:
-				lines = append(lines, tableHeader(" Playlist", gruvboxOrange))
-				lines = append(lines, separatorLine(41, gruvboxBg3))
+				lines = append(lines, tableHeader(" Playlist", activePalette.Orange))
+				lines = append(lines, separatorLine(41, activePalette.Border))
 				for i, pl := range m.app.SearchPlaylists {
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
-					lines = append(lines, trackRow(label, selected == i, gruvboxPurple))
+					lines = append(lines, trackRow(label, selected == i, activePalette.Purple))
 				}
 			case app.SearchCategoryArtists:
-				lines = append(lines, tableHeader(" Artist", gruvboxOrange))
-				lines = append(lines, separatorLine(41, gruvboxBg3))
+				lines = append(lines, tableHeader(" Artist", activePalette.Orange))
+				lines = append(lines, separatorLine(41, activePalette.Border))
 				for i, artist := range m.app.SearchArtists {
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
-					lines = append(lines, trackRow(label, selected == i, gruvboxGreen))
+					lines = append(lines, trackRow(label, selected == i, activePalette.Green))
 				}
 			}
 		} else {
-			playAll := trackRow(" Play Collection", selected == 0, gruvboxYellow)
+			playAll := trackRow(" Play Collection", selected == 0, activePalette.Yellow)
 			lines = append(lines, playAll)
 			if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
-				lines = append(lines, paint(fmt.Sprintf(" Sort: added date %s", ternary(m.favoritesSortAsc, "asc", "desc")), gruvboxFg4, ""))
+				lines = append(lines, paint(fmt.Sprintf(" Sort: added date %s", ternary(m.favoritesSortAsc, "asc", "desc")), activePalette.TextMuted, ""))
 			}
 			lines = append(lines, "")
-			lines = append(lines, tableHeader(" #  Title                               Artist", gruvboxOrange))
-			lines = append(lines, separatorLine(58, gruvboxBg3))
+			lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
+			lines = append(lines, separatorLine(58, activePalette.Border))
 			for i, track := range m.app.CurrentTracks {
 				label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-				lines = append(lines, trackRow(label, selected == i+1, gruvboxAqua))
+				lines = append(lines, trackRow(label, selected == i+1, activePalette.Aqua))
 			}
 		}
 	}
@@ -1494,30 +1482,30 @@ func (m Model) renderQueue(width, height int) string {
 	metaWidth := max(16, contentWidth-2)
 	queueItemWidth := max(16, contentWidth-4)
 	lines := []string{
-		kvLine("State", ternary(m.app.IsPlaying, "Playing", "Stopped"), gruvboxGreen),
-		kvLine("Volume", fmt.Sprintf("%d%%", m.app.Volume), gruvboxAqua),
-		kvLine("Repeat", repeatModeLabel(m.app.RepeatMode), gruvboxOrange),
-		kvLine("Flow", fmt.Sprintf("%t", m.app.IsFlowQueue), gruvboxPurple),
+		kvLine("State", ternary(m.app.IsPlaying, "Playing", "Stopped"), activePalette.Green),
+		kvLine("Volume", fmt.Sprintf("%d%%", m.app.Volume), activePalette.Aqua),
+		kvLine("Repeat", repeatModeLabel(m.app.RepeatMode), activePalette.Orange),
+		kvLine("Flow", fmt.Sprintf("%t", m.app.IsFlowQueue), activePalette.Purple),
 	}
 
 	if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		track := m.app.QueueTracks[*m.app.QueueIndex]
-		lines = append(lines, "", sectionHeading("Now Playing", gruvboxYellow), paint(" "+truncate(track.Title, metaWidth), gruvboxFg0, ""), paint(" "+truncate(track.Artist, metaWidth), gruvboxFg4, ""))
+		lines = append(lines, "", sectionHeading("Now Playing", activePalette.Yellow), paint(" "+truncate(track.Title, metaWidth), activePalette.TextStrong, ""), paint(" "+truncate(track.Artist, metaWidth), activePalette.TextMuted, ""))
 	} else {
-		lines = append(lines, "", paint(" Nothing queued", gruvboxFg4, ""))
+		lines = append(lines, "", paint(" Nothing queued", activePalette.TextMuted, ""))
 	}
 
 	if len(m.app.Queue) > 0 {
-		lines = append(lines, "", sectionHeading("Queue", gruvboxOrange))
-		lines = append(lines, separatorLine(contentWidth, gruvboxBg3))
+		lines = append(lines, "", sectionHeading("Queue", activePalette.Orange))
+		lines = append(lines, separatorLine(contentWidth, activePalette.Border))
 		for i, item := range m.app.Queue {
 			line := fmt.Sprintf(" %02d %s", i+1, truncate(item, queueItemWidth))
 			if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
-				line = trackRow(line, true, gruvboxOrange)
+				line = trackRow(line, true, activePalette.Orange)
 			} else if m.app.QueueIndex != nil && i == *m.app.QueueIndex {
-				line = paint("▶"+line[1:], gruvboxBgHard, gruvboxAqua)
+				line = paint("▶"+line[1:], activePalette.BackgroundHard, activePalette.Aqua)
 			} else {
-				line = paint(line, gruvboxFg1, "")
+				line = paint(line, activePalette.Text, "")
 			}
 			lines = append(lines, line)
 			if i >= height-10 {
@@ -1532,13 +1520,13 @@ func (m Model) renderQueue(width, height int) string {
 func (m Model) renderSearchBar() string {
 	query := m.app.SearchQuery
 	if query == "" && m.app.IsSearching {
-		query = paint("_", gruvboxAqua, "")
+		query = paint("_", activePalette.Aqua, "")
 	}
-	label := paint(" Search ", gruvboxFg4, "")
+	label := paint(" Search ", activePalette.TextMuted, "")
 	if m.app.IsSearching {
-		label = paint(" Search ", gruvboxOrange, "")
+		label = paint(" Search ", activePalette.Orange, "")
 	}
-	help := paint("tab switch | hjkl move | enter select | space play/pause | / search", gruvboxFg4, "")
+	help := paint("tab switch | hjkl move | enter select | space play/pause | / search", activePalette.TextMuted, "")
 	return renderLineBox(fmt.Sprintf("%s %s", label, query), help, m.width)
 }
 
@@ -1547,13 +1535,13 @@ func (m Model) renderPlaybar() string {
 	if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
 		controls = " space play/pause | n/p next prev | ,/. seek | [/] quality | r repeat | s sort | +/- volume "
 	}
-	left := paint(controls, gruvboxFg1, "")
-	stateColor := gruvboxFg4
+	left := paint(controls, activePalette.Text, "")
+	stateColor := activePalette.TextMuted
 	if m.app.IsPlaying {
-		stateColor = gruvboxOrange
+		stateColor = activePalette.Orange
 	}
 	right := fmt.Sprintf("%s | %s",
-		paint(fmt.Sprintf("vol %d%%", m.app.Volume), gruvboxAqua, ""),
+		paint(fmt.Sprintf("vol %d%%", m.app.Volume), activePalette.Aqua, ""),
 		paint(ternary(m.app.IsPlaying, "playing", "paused"), stateColor, ""),
 	)
 	return renderLineBox(left, right, m.width)
@@ -1591,14 +1579,14 @@ func (m Model) renderStatusLine() string {
 		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
 	}
 	lines := []string{
-		kvLine("State", m.displayState(), gruvboxGreen),
-		kvLine("Track", title, gruvboxYellow),
-		kvLine("Artist", artist, gruvboxAqua),
-		kvLine("Progress", progress, gruvboxFg1),
-		kvLine("Elapsed", elapsed+" / "+total, gruvboxOrange),
-		kvLine("Quality", quality, gruvboxPurple),
-		kvLine("Source", source, gruvboxBlue),
-		kvLine("Queue", queueInfo, gruvboxFg4),
+		kvLine("State", m.displayState(), activePalette.Green),
+		kvLine("Track", title, activePalette.Yellow),
+		kvLine("Artist", artist, activePalette.Aqua),
+		kvLine("Progress", progress, activePalette.Text),
+		kvLine("Elapsed", elapsed+" / "+total, activePalette.Orange),
+		kvLine("Quality", quality, activePalette.Purple),
+		kvLine("Source", source, activePalette.Blue),
+		kvLine("Queue", queueInfo, activePalette.TextMuted),
 	}
 	art := m.artworkANSI
 	if art == "" {
@@ -1630,17 +1618,17 @@ func (m Model) renderPanel(title, body string, active bool, width, height int) s
 	innerWidth := max(12, width-2)
 	bodyHeight := max(1, height-2)
 	titleText := " " + truncate(title, max(1, innerWidth-2)) + " "
-	borderFG := gruvboxBg3
-	titleFG := gruvboxFg4
-	titleBG := gruvboxBg0
-	panelBG := gruvboxBg0
-	contentFG := gruvboxFg1
+	borderFG := activePalette.Border
+	titleFG := activePalette.TextMuted
+	titleBG := activePalette.Background
+	panelBG := activePalette.Background
+	contentFG := activePalette.Text
 	if active {
-		borderFG = gruvboxBg3
-		titleFG = gruvboxOrange
-		titleBG = gruvboxBg0
-		panelBG = gruvboxBg0
-		contentFG = gruvboxFg0
+		borderFG = activePalette.Border
+		titleFG = activePalette.Orange
+		titleBG = activePalette.Background
+		panelBG = activePalette.Background
+		contentFG = activePalette.TextStrong
 	}
 	top := paint(tl, borderFG, panelBG) +
 		paint(titleText, titleFG, titleBG) +
@@ -1684,14 +1672,14 @@ func (m Model) renderArtworkSlot(content string, width, height int) string {
 	bottomPad := 1
 	sidePad := 1
 	for i := 0; i < topPad; i++ {
-		out = append(out, paint(strings.Repeat(" ", width), "", gruvboxBg0))
+		out = append(out, paint(strings.Repeat(" ", width), "", activePalette.Background))
 	}
 	for i := 0; i < 7; i++ {
 		line := fitArtworkLine(lines[i], 14)
-		out = append(out, paint(strings.Repeat(" ", sidePad), "", gruvboxBg0)+line+paint(strings.Repeat(" ", sidePad), "", gruvboxBg0))
+		out = append(out, paint(strings.Repeat(" ", sidePad), "", activePalette.Background)+line+paint(strings.Repeat(" ", sidePad), "", activePalette.Background))
 	}
 	for i := 0; i < bottomPad; i++ {
-		out = append(out, paint(strings.Repeat(" ", width), "", gruvboxBg0))
+		out = append(out, paint(strings.Repeat(" ", width), "", activePalette.Background))
 	}
 	return strings.Join(out, "\n")
 }
@@ -1742,7 +1730,7 @@ func defaultArtworkANSI() string {
 		"    NO ART    ",
 	}
 	for i, line := range lines {
-		lines[i] = paint(fitToWidth(line, 14), gruvboxFg4, "")
+		lines[i] = paint(fitToWidth(line, 14), activePalette.TextMuted, "")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2056,9 +2044,9 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 			filled = width
 		}
 	}
-	filledBar := paint(strings.Repeat("━", filled), gruvboxOrange, "")
-	emptyBar := paint(strings.Repeat("-", width-filled), gruvboxBg3, "")
-	timing := paint(fmt.Sprintf("%s / %s", formatClock(currentMS), formatClock(totalMS)), gruvboxFg4, "")
+	filledBar := paint(strings.Repeat("━", filled), activePalette.Orange, "")
+	emptyBar := paint(strings.Repeat("-", width-filled), activePalette.Border, "")
+	timing := paint(fmt.Sprintf("%s / %s", formatClock(currentMS), formatClock(totalMS)), activePalette.TextMuted, "")
 	return fmt.Sprintf("[%s%s] %s", filledBar, emptyBar, timing)
 }
 
@@ -2080,9 +2068,9 @@ func renderSearchTabs(category app.SearchCategory) string {
 	for _, tab := range tabs {
 		label := " " + strings.ToUpper(tab.label) + " "
 		if tab.value == category {
-			label = paint(strings.TrimSpace(label), gruvboxOrange, "")
+			label = paint(strings.TrimSpace(label), activePalette.Orange, "")
 		} else {
-			label = paint(label, gruvboxFg4, "")
+			label = paint(label, activePalette.TextMuted, "")
 		}
 		parts = append(parts, label)
 	}
@@ -2098,11 +2086,11 @@ func renderLineBox(left, right string, width int) string {
 		right = ""
 		space = inner - textWidth(left)
 	}
-	border := paint("┌"+strings.Repeat("─", inner)+"┐", gruvboxBg3, gruvboxBg0)
-	content := paint("│", gruvboxBg3, gruvboxBg0) +
-		paint(fitToWidth(left+strings.Repeat(" ", max(0, space))+right, inner), gruvboxFg1, gruvboxBg0) +
-		paint("│", gruvboxBg3, gruvboxBg0)
-	bottom := paint("└"+strings.Repeat("─", inner)+"┘", gruvboxBg3, gruvboxBg0)
+	border := paint("┌"+strings.Repeat("─", inner)+"┐", activePalette.Border, activePalette.Background)
+	content := paint("│", activePalette.Border, activePalette.Background) +
+		paint(fitToWidth(left+strings.Repeat(" ", max(0, space))+right, inner), activePalette.Text, activePalette.Background) +
+		paint("│", activePalette.Border, activePalette.Background)
+	bottom := paint("└"+strings.Repeat("─", inner)+"┘", activePalette.Border, activePalette.Background)
 	return border + "\n" + content + "\n" + bottom
 }
 
@@ -2114,18 +2102,18 @@ func renderTripleLine(left, center, right string, width int) string {
 	center = truncate(center, remaining)
 	leftPad := max(0, (remaining-textWidth(center))/2)
 	rightPad := max(0, remaining-textWidth(center)-leftPad)
-	top := paint("┌"+strings.Repeat("─", inner)+"┐", gruvboxBg3, gruvboxBg0)
-	content := paint("│", gruvboxBg3, gruvboxBg0) +
+	top := paint("┌"+strings.Repeat("─", inner)+"┐", activePalette.Border, activePalette.Background)
+	content := paint("│", activePalette.Border, activePalette.Background) +
 		paint(fitToWidth(
-			paint(left, gruvboxOrange, "")+
+			paint(left, activePalette.Orange, "")+
 				strings.Repeat(" ", leftPad)+
-				paint(center, gruvboxFg4, "")+
+				paint(center, activePalette.TextMuted, "")+
 				strings.Repeat(" ", rightPad)+
-				paint(right, gruvboxFg4, ""),
+				paint(right, activePalette.TextMuted, ""),
 			inner,
-		), gruvboxFg1, gruvboxBg0) +
-		paint("│", gruvboxBg3, gruvboxBg0)
-	bottom := paint("└"+strings.Repeat("─", inner)+"┘", gruvboxBg3, gruvboxBg0)
+		), activePalette.Text, activePalette.Background) +
+		paint("│", activePalette.Border, activePalette.Background)
+	bottom := paint("└"+strings.Repeat("─", inner)+"┘", activePalette.Border, activePalette.Background)
 	return top + "\n" + content + "\n" + bottom
 }
 
@@ -2169,7 +2157,7 @@ func fitToWidth(s string, width int) string {
 func fillBackground(content string, width int) string {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		lines[i] = paint(fitToWidth(line, width), "", gruvboxBg0)
+		lines[i] = paint(fitToWidth(line, width), "", activePalette.Background)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2208,96 +2196,8 @@ func qualityLabel(q config.AudioQuality) string {
 	}
 }
 
-type colorTheme struct {
-	bgHard string
-	bg0    string
-	bg3    string
-	fg0    string
-	fg1    string
-	fg4    string
-	yellow string
-	blue   string
-	aqua   string
-	green  string
-	orange string
-	purple string
-}
-
-var colorThemes = map[config.Theme]colorTheme{
-	config.ThemeAetheria: {
-		bgHard: "#100c18",
-		bg0:    "#15111f",
-		bg3:    "#3d314a",
-		fg0:    "#e4d4de",
-		fg1:    "#c8b3bf",
-		fg4:    "#8f7383",
-		yellow: "#f3c969",
-		blue:   "#8f7383",
-		aqua:   "#21c7d9",
-		green:  "#21c7d9",
-		orange: "#e07a87",
-		purple: "#b18bb8",
-	},
-	config.ThemeGruvbox: {
-		bgHard: "#1d2021",
-		bg0:    "#282828",
-		bg3:    "#665c54",
-		fg0:    "#fbf1c7",
-		fg1:    "#ebdbb2",
-		fg4:    "#a89984",
-		yellow: "#fabd2f",
-		blue:   "#83a598",
-		aqua:   "#8ec07c",
-		green:  "#b8bb26",
-		orange: "#fe8019",
-		purple: "#d3869b",
-	},
-}
-
-func applyTheme(theme config.Theme) {
-	palette, ok := colorThemes[config.NormalizeTheme(theme)]
-	if !ok {
-		palette = colorThemes[config.ThemeAetheria]
-	}
-	gruvboxBgHard = palette.bgHard
-	gruvboxBg0 = palette.bg0
-	gruvboxBg3 = palette.bg3
-	gruvboxFg0 = palette.fg0
-	gruvboxFg1 = palette.fg1
-	gruvboxFg4 = palette.fg4
-	gruvboxYellow = palette.yellow
-	gruvboxBlue = palette.blue
-	gruvboxAqua = palette.aqua
-	gruvboxGreen = palette.green
-	gruvboxOrange = palette.orange
-	gruvboxPurple = palette.purple
-}
-
-func themeLabel(theme config.Theme) string {
-	switch config.NormalizeTheme(theme) {
-	case config.ThemeGruvbox:
-		return "Gruvbox"
-	default:
-		return "Aetheria"
-	}
-}
-
-func nextTheme(current config.Theme, direction int) config.Theme {
-	themes := []config.Theme{config.ThemeAetheria, config.ThemeGruvbox}
-	current = config.NormalizeTheme(current)
-	idx := 0
-	for i, theme := range themes {
-		if theme == current {
-			idx = i
-			break
-		}
-	}
-	if direction < 0 {
-		idx = (idx - 1 + len(themes)) % len(themes)
-	} else {
-		idx = (idx + 1) % len(themes)
-	}
-	return themes[idx]
+func applyTheme(theme colorscheme.Name) {
+	activePalette = colorscheme.Lookup(theme).Palette
 }
 
 func nextQuality(current config.AudioQuality, direction int) config.AudioQuality {
@@ -2351,11 +2251,11 @@ func (m Model) renderSettingsRows() []string {
 		value string
 		color string
 	}{
-		{label: "Theme", value: themeLabel(m.app.Config.Theme), color: gruvboxBlue},
-		{label: "Volume", value: fmt.Sprintf("%d%%", m.app.Volume), color: gruvboxAqua},
-		{label: "Quality", value: qualityLabel(m.app.Config.DefaultQuality), color: gruvboxPurple},
-		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: gruvboxOrange},
-		{label: "Duration", value: fmt.Sprintf("%dms", m.app.Config.CrossfadeDurationMS), color: gruvboxYellow},
+		{label: "Theme", value: colorscheme.Label(m.app.Config.Theme), color: activePalette.Blue},
+		{label: "Volume", value: fmt.Sprintf("%d%%", m.app.Volume), color: activePalette.Aqua},
+		{label: "Quality", value: qualityLabel(m.app.Config.DefaultQuality), color: activePalette.Purple},
+		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: activePalette.Orange},
+		{label: "Duration", value: fmt.Sprintf("%dms", m.app.Config.CrossfadeDurationMS), color: activePalette.Yellow},
 	}
 	lines := make([]string, 0, len(rows))
 	for i, row := range rows {
@@ -2417,13 +2317,13 @@ func (m Model) renderLoadingScreen() string {
 	frame := loadingHeartFrames[m.loadingFrame%len(loadingHeartFrames)]
 	lines := make([]string, 0, len(frame)+len(loadingWordmark)+3)
 	for _, line := range frame {
-		lines = append(lines, centerText(paint(line, gruvboxPurple, ""), m.width))
+		lines = append(lines, centerText(paint(line, activePalette.Purple, ""), m.width))
 	}
 	lines = append(lines, "")
 	for _, line := range loadingWordmark {
-		lines = append(lines, centerText(paint(line, gruvboxAqua, ""), m.width))
+		lines = append(lines, centerText(paint(line, activePalette.Aqua, ""), m.width))
 	}
-	lines = append(lines, centerText(paint(strings.TrimSpace(m.app.StatusMessage), gruvboxFg4, ""), m.width))
+	lines = append(lines, centerText(paint(strings.TrimSpace(m.app.StatusMessage), activePalette.TextMuted, ""), m.width))
 	return verticalCenter(strings.Join(lines, "\n"), m.height)
 }
 
@@ -2463,21 +2363,21 @@ func separatorLine(width int, color string) string {
 }
 
 func kvLine(label, value, valueColor string) string {
-	return paint(fmt.Sprintf(" %-10s ", label+":"), gruvboxFg4, "") + paint(value, valueColor, "")
+	return paint(fmt.Sprintf(" %-10s ", label+":"), activePalette.TextMuted, "") + paint(value, valueColor, "")
 }
 
 func listRow(text string, selected bool, accent string) string {
 	if selected {
-		return paint("> ", accent, "") + paint(text, gruvboxFg0, "")
+		return paint("> ", accent, "") + paint(text, activePalette.TextStrong, "")
 	}
-	return paint("  ", accent, "") + paint(text, gruvboxFg1, "")
+	return paint("  ", accent, "") + paint(text, activePalette.Text, "")
 }
 
 func trackRow(text string, selected bool, accent string) string {
 	if selected {
-		return paint("> ", accent, "") + paint(strings.TrimLeft(text, " "), gruvboxFg0, "")
+		return paint("> ", accent, "") + paint(strings.TrimLeft(text, " "), activePalette.TextStrong, "")
 	}
-	return "  " + paint(strings.TrimLeft(text, " "), gruvboxFg1, "")
+	return "  " + paint(strings.TrimLeft(text, " "), activePalette.Text, "")
 }
 
 func paint(text, fg, bg string) string {
@@ -2499,14 +2399,14 @@ func paint(text, fg, bg string) string {
 	}
 	resetBG := bg
 	if resetBG == "" {
-		resetBG = gruvboxBg0
+		resetBG = activePalette.Background
 	}
 	reset := append([]string{"39", hexToANSI(resetBG, 48)}, resetsWithoutColorReset(resets)...)
 	return "\x1b[" + strings.Join(parts, ";") + "m" + text + "\x1b[" + strings.Join(reset, ";") + "m"
 }
 
 func baseBackgroundReset() string {
-	return "\x1b[39;" + hexToANSI(gruvboxBg0, 48) + "m"
+	return "\x1b[39;" + hexToANSI(activePalette.Background, 48) + "m"
 }
 
 func resetsWithoutColorReset(resets []string) []string {

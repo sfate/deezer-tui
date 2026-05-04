@@ -5,17 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-)
 
-type Theme string
-
-const (
-	ThemeAetheria Theme = "Aetheria"
-	ThemeGruvbox  Theme = "Gruvbox"
-
-	// Deprecated names kept so existing config files migrate cleanly.
-	ThemeSpotifyDark Theme = "SpotifyDark"
-	ThemeNcmpcppBlue Theme = "NcmpcppBlue"
+	"deezer-tui/internal/colorscheme"
 )
 
 type AudioQuality string
@@ -53,16 +44,16 @@ func AudioQualityFromFormatCode(code uint8) (AudioQuality, bool) {
 }
 
 type Config struct {
-	Theme               Theme        `json:"theme"`
-	CrossfadeEnabled    bool         `json:"crossfade_enabled"`
-	CrossfadeDurationMS uint64       `json:"crossfade_duration_ms"`
-	DefaultQuality      AudioQuality `json:"default_quality"`
-	ARL                 string       `json:"arl"`
+	Theme               colorscheme.Name `json:"theme"`
+	CrossfadeEnabled    bool             `json:"crossfade_enabled"`
+	CrossfadeDurationMS uint64           `json:"crossfade_duration_ms"`
+	DefaultQuality      AudioQuality     `json:"default_quality"`
+	ARL                 string           `json:"arl"`
 }
 
 func Default() Config {
 	return Config{
-		Theme:               ThemeAetheria,
+		Theme:               colorscheme.Aetheria,
 		CrossfadeEnabled:    false,
 		CrossfadeDurationMS: 0,
 		DefaultQuality:      AudioQuality320,
@@ -92,23 +83,12 @@ func Load() Config {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Default()
 	}
-	cfg.Theme = NormalizeTheme(cfg.Theme)
+	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	return cfg
 }
 
-func NormalizeTheme(theme Theme) Theme {
-	switch theme {
-	case ThemeGruvbox:
-		return ThemeGruvbox
-	case ThemeAetheria, ThemeSpotifyDark, ThemeNcmpcppBlue, "":
-		return ThemeAetheria
-	default:
-		return ThemeAetheria
-	}
-}
-
 func Save(cfg Config) error {
-	cfg.Theme = NormalizeTheme(cfg.Theme)
+	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	path, err := ConfigFilePath()
 	if err != nil {
 		return err

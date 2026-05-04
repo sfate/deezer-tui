@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 
+	"deezer-tui/internal/colorscheme"
 	"deezer-tui/internal/config"
 )
 
@@ -157,7 +158,7 @@ type App struct {
 }
 
 func New(cfg config.Config) *App {
-	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	app := &App{
 		Config:              cfg,
 		CurrentRoute:        RouteLibrary,

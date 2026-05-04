@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"deezer-tui/internal/app"
+	"deezer-tui/internal/colorscheme"
 	"deezer-tui/internal/config"
 	"deezer-tui/internal/deezer"
 	"deezer-tui/internal/player"
@@ -362,14 +363,14 @@ func TestSettingsThemePersistsAndAppliesImmediately(t *testing.T) {
 
 	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	updated := nextModel.(Model)
-	if updated.app.Config.Theme != config.ThemeGruvbox {
+	if updated.app.Config.Theme != colorscheme.Gruvbox {
 		t.Fatalf("expected theme to cycle to gruvbox, got %s", updated.app.Config.Theme)
 	}
-	if len(saved) != 1 || saved[0].Theme != config.ThemeGruvbox {
+	if len(saved) != 1 || saved[0].Theme != colorscheme.Gruvbox {
 		t.Fatalf("expected gruvbox theme to be persisted, got %#v", saved)
 	}
-	if gruvboxBg0 != "#282828" {
-		t.Fatalf("expected gruvbox palette to apply, got bg %s", gruvboxBg0)
+	if activePalette.Background != "#282828" {
+		t.Fatalf("expected gruvbox palette to apply, got bg %s", activePalette.Background)
 	}
 }
 
@@ -1306,7 +1307,7 @@ func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
 
 func TestArtworkSlotDoesNotLeakCachedThemeBackground(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
-	applyTheme(config.ThemeAetheria)
+	applyTheme(colorscheme.Aetheria)
 
 	slot := model.renderArtworkSlot("X\x1b[39;48;2;40;40;40m", 16, 9)
 	if strings.Contains(slot, "48;2;40;40;40") {
