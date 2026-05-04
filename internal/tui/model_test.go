@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"strings"
@@ -313,6 +314,81 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	}
 	if strings.Contains(view, "Discord") {
 		t.Fatal("did not expect Discord setting to be rendered")
+	}
+}
+
+func TestLibraryPlaylistsScrollUnderFixedBrowseRows(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	for i := 1; i <= 8; i++ {
+		model.app.Playlists = append(model.app.Playlists, app.Playlist{
+			ID:    fmt.Sprintf("pl-%02d", i),
+			Title: fmt.Sprintf("Playlist %02d", i),
+		})
+	}
+	model.app.ActivePanel = app.ActivePanelPlaylists
+	model.app.PlaylistState.Select(intPtr(5))
+
+	view := model.renderSidebar(28, 12)
+
+	if !strings.Contains(view, "Browse") || !strings.Contains(view, "Library") {
+		t.Fatal("expected fixed browse and library headings")
+	}
+	if strings.Contains(view, "Playlist 01") {
+		t.Fatal("did not expect first playlist to remain visible after scrolling")
+	}
+	if !strings.Contains(view, "Playlist 06") {
+		t.Fatal("expected selected playlist to be visible after scrolling")
+	}
+}
+
+func TestQueueScrollsTracksWithoutDroppingQueueInfo(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	for i := 1; i <= 12; i++ {
+		model.app.QueueTracks = append(model.app.QueueTracks, app.Track{
+			ID:     fmt.Sprintf("%02d", i),
+			Title:  fmt.Sprintf("Track %02d", i),
+			Artist: "Artist",
+		})
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(8)
+	model.app.QueueState.Select(intPtr(8))
+
+	view := model.renderQueue(44, 18)
+
+	if !strings.Contains(view, "State") || !strings.Contains(view, "Now Playing") || !strings.Contains(view, "Queue") {
+		t.Fatal("expected queue metadata to remain visible")
+	}
+	if strings.Contains(view, "Track 01") {
+		t.Fatal("did not expect first queue item to remain visible after current track scroll")
+	}
+	if !strings.Contains(view, "Track 09") || !strings.Contains(view, "Track 11") {
+		t.Fatal("expected current queue item and following tracks to be visible")
+	}
+}
+
+func TestCollectionTracksScrollUnderFixedHeader(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ActivePanel = app.ActivePanelMain
+	for i := 1; i <= 12; i++ {
+		model.app.CurrentTracks = append(model.app.CurrentTracks, app.Track{
+			ID:     fmt.Sprintf("%02d", i),
+			Title:  fmt.Sprintf("Track %02d", i),
+			Artist: "Artist",
+		})
+	}
+	model.app.MainState.Select(intPtr(9))
+
+	view := model.renderMain(58, 12)
+
+	if !strings.Contains(view, "Play Collection") || !strings.Contains(view, "Title") {
+		t.Fatal("expected collection controls and header to remain visible")
+	}
+	if strings.Contains(view, "Track 01") {
+		t.Fatal("did not expect first track to remain visible after scrolling")
+	}
+	if !strings.Contains(view, "Track 09") {
+		t.Fatal("expected selected track to be visible after scrolling")
 	}
 }
 

@@ -199,33 +199,15 @@ func (a *App) HandleDown() {
 	switch a.ActivePanel {
 	case ActivePanelNavigation:
 		current := derefOrZero(a.NavState.Selected())
-		if current >= 4 {
-			a.ActivePanel = ActivePanelPlaylists
-			if len(a.Playlists) > 0 {
-				a.PlaylistState.Select(intPtr(0))
-			}
-		} else {
-			a.NavState.Select(intPtr(current + 1))
-		}
+		a.NavState.Select(intPtr(min(current+1, 4)))
 	case ActivePanelPlaylists:
 		if len(a.Playlists) == 0 {
-			a.ActivePanel = ActivePanelQueue
-			if len(a.Queue) > 0 {
-				a.QueueState.Select(intPtr(0))
-			}
 			return
 		}
 
 		max := len(a.Playlists) - 1
 		current := derefOrZero(a.PlaylistState.Selected())
-		if current >= max {
-			a.ActivePanel = ActivePanelQueue
-			if len(a.Queue) > 0 {
-				a.QueueState.Select(intPtr(0))
-			}
-		} else {
-			a.PlaylistState.Select(intPtr(current + 1))
-		}
+		a.PlaylistState.Select(intPtr(min(current+1, max)))
 	case ActivePanelQueue:
 		if len(a.Queue) == 0 {
 			return
@@ -255,8 +237,6 @@ func (a *App) HandleDown() {
 		} else if len(a.CurrentTracks) > 0 {
 			current := derefOrZero(a.MainState.Selected())
 			a.MainState.Select(intPtr(min(current+1, len(a.CurrentTracks))))
-		} else {
-			a.ActivePanel = ActivePanelPlayer
 		}
 	case ActivePanelPlayer:
 		a.ActivePanel = ActivePanelPlayerProgress
@@ -269,36 +249,18 @@ func (a *App) HandleUp() {
 	switch a.ActivePanel {
 	case ActivePanelQueue:
 		if len(a.Queue) == 0 {
-			a.ActivePanel = ActivePanelPlaylists
-			if len(a.Playlists) > 0 {
-				a.PlaylistState.Select(intPtr(len(a.Playlists) - 1))
-			}
 			return
 		}
 
 		current := derefOrZero(a.QueueState.Selected())
-		if current == 0 {
-			a.ActivePanel = ActivePanelPlaylists
-			if len(a.Playlists) > 0 {
-				a.PlaylistState.Select(intPtr(len(a.Playlists) - 1))
-			}
-		} else {
-			a.QueueState.Select(intPtr(current - 1))
-		}
+		a.QueueState.Select(intPtr(max0(current - 1)))
 	case ActivePanelPlaylists:
 		if len(a.Playlists) == 0 {
-			a.ActivePanel = ActivePanelNavigation
-			a.NavState.Select(intPtr(4))
 			return
 		}
 
 		current := derefOrZero(a.PlaylistState.Selected())
-		if current == 0 {
-			a.ActivePanel = ActivePanelNavigation
-			a.NavState.Select(intPtr(4))
-		} else {
-			a.PlaylistState.Select(intPtr(current - 1))
-		}
+		a.PlaylistState.Select(intPtr(max0(current - 1)))
 	case ActivePanelNavigation:
 		current := derefOrZero(a.NavState.Selected())
 		a.NavState.Select(intPtr(max0(current - 1)))
@@ -310,11 +272,7 @@ func (a *App) HandleUp() {
 			a.SettingsState.Select(intPtr(max0(current - 1)))
 		} else if len(a.CurrentTracks) > 0 {
 			current := derefOrZero(a.MainState.Selected())
-			if current == 0 {
-				a.ActivePanel = ActivePanelSearch
-			} else {
-				a.MainState.Select(intPtr(current - 1))
-			}
+			a.MainState.Select(intPtr(max0(current - 1)))
 		}
 	case ActivePanelPlayer:
 		a.ActivePanel = ActivePanelMain

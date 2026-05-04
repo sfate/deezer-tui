@@ -1402,12 +1402,14 @@ func (m Model) renderSidebar(width, height int) string {
 		nav = append(nav, listRow(item, selected, activePalette.Blue))
 	}
 	nav = append(nav, "", sectionHeading("Library", activePalette.Purple))
-	for i, pl := range m.app.Playlists {
+	visiblePlaylists := max(0, height-2-len(nav))
+	selectedPlaylist := derefOrZero(m.app.PlaylistState.Selected())
+	start := scrollStart(selectedPlaylist, len(m.app.Playlists), visiblePlaylists, 0)
+	end := min(len(m.app.Playlists), start+visiblePlaylists)
+	for i := start; i < end; i++ {
+		pl := m.app.Playlists[i]
 		selected := i == derefOrZero(m.app.PlaylistState.Selected()) && m.app.ActivePanel == app.ActivePanelPlaylists
 		nav = append(nav, listRow(truncate(pl.Title, 20), selected, activePalette.Purple))
-		if i >= height-8 {
-			break
-		}
 	}
 	return m.renderPanel("Library", strings.Join(nav, "\n"), m.app.ActivePanel == app.ActivePanelNavigation || m.app.ActivePanel == app.ActivePanelPlaylists, width, height)
 }
@@ -1439,21 +1441,33 @@ func (m Model) renderMain(width, height int) string {
 			case app.SearchCategoryTracks:
 				lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
 				lines = append(lines, separatorLine(58, activePalette.Border))
-				for i, track := range m.app.CurrentTracks {
+				visibleRows := max(0, height-2-len(lines))
+				start := scrollStart(selected, len(m.app.CurrentTracks), visibleRows, 0)
+				end := min(len(m.app.CurrentTracks), start+visibleRows)
+				for i := start; i < end; i++ {
+					track := m.app.CurrentTracks[i]
 					label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
 					lines = append(lines, trackRow(label, selected == i, activePalette.Aqua))
 				}
 			case app.SearchCategoryPlaylists:
 				lines = append(lines, tableHeader(" Playlist", activePalette.Orange))
 				lines = append(lines, separatorLine(41, activePalette.Border))
-				for i, pl := range m.app.SearchPlaylists {
+				visibleRows := max(0, height-2-len(lines))
+				start := scrollStart(selected, len(m.app.SearchPlaylists), visibleRows, 0)
+				end := min(len(m.app.SearchPlaylists), start+visibleRows)
+				for i := start; i < end; i++ {
+					pl := m.app.SearchPlaylists[i]
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
 					lines = append(lines, trackRow(label, selected == i, activePalette.Purple))
 				}
 			case app.SearchCategoryArtists:
 				lines = append(lines, tableHeader(" Artist", activePalette.Orange))
 				lines = append(lines, separatorLine(41, activePalette.Border))
-				for i, artist := range m.app.SearchArtists {
+				visibleRows := max(0, height-2-len(lines))
+				start := scrollStart(selected, len(m.app.SearchArtists), visibleRows, 0)
+				end := min(len(m.app.SearchArtists), start+visibleRows)
+				for i := start; i < end; i++ {
+					artist := m.app.SearchArtists[i]
 					label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
 					lines = append(lines, trackRow(label, selected == i, activePalette.Green))
 				}
@@ -1467,7 +1481,15 @@ func (m Model) renderMain(width, height int) string {
 			lines = append(lines, "")
 			lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
 			lines = append(lines, separatorLine(58, activePalette.Border))
-			for i, track := range m.app.CurrentTracks {
+			visibleRows := max(0, height-2-len(lines))
+			selectedTrack := max0(selected - 1)
+			start := 0
+			if selected > 0 {
+				start = scrollStart(selectedTrack, len(m.app.CurrentTracks), visibleRows, 0)
+			}
+			end := min(len(m.app.CurrentTracks), start+visibleRows)
+			for i := start; i < end; i++ {
+				track := m.app.CurrentTracks[i]
 				label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
 				lines = append(lines, trackRow(label, selected == i+1, activePalette.Aqua))
 			}
@@ -1498,7 +1520,19 @@ func (m Model) renderQueue(width, height int) string {
 	if len(m.app.Queue) > 0 {
 		lines = append(lines, "", sectionHeading("Queue", activePalette.Orange))
 		lines = append(lines, separatorLine(contentWidth, activePalette.Border))
-		for i, item := range m.app.Queue {
+		visibleRows := max(0, height-2-len(lines))
+		target := -1
+		following := 2
+		if m.app.ActivePanel == app.ActivePanelQueue {
+			target = derefOrZero(m.app.QueueState.Selected())
+			following = 0
+		} else if m.app.QueueIndex != nil {
+			target = *m.app.QueueIndex
+		}
+		start := scrollStart(target, len(m.app.Queue), visibleRows, following)
+		end := min(len(m.app.Queue), start+visibleRows)
+		for i := start; i < end; i++ {
+			item := m.app.Queue[i]
 			line := fmt.Sprintf(" %02d %s", i+1, truncate(item, queueItemWidth))
 			if m.app.ActivePanel == app.ActivePanelQueue && i == derefOrZero(m.app.QueueState.Selected()) {
 				line = trackRow(line, true, activePalette.Orange)
@@ -1508,9 +1542,6 @@ func (m Model) renderQueue(width, height int) string {
 				line = paint(line, activePalette.Text, "")
 			}
 			lines = append(lines, line)
-			if i >= height-10 {
-				break
-			}
 		}
 	}
 
@@ -1981,6 +2012,21 @@ func derefOrZero(v *int) int {
 		return 0
 	}
 	return *v
+}
+
+func max0(v int) int {
+	return max(v, 0)
+}
+
+func scrollStart(index, total, visible, following int) int {
+	if total <= 0 || visible <= 0 || visible >= total || index < 0 {
+		return 0
+	}
+	index = min(max(index, 0), total-1)
+	following = max(following, 0)
+	start := index + following - visible + 1
+	start = max(start, 0)
+	return min(start, total-visible)
 }
 
 func joinColumns(columns ...string) string {

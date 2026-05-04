@@ -16,30 +16,29 @@ func track(id, title, artist string) Track {
 	return Track{ID: id, Title: title, Artist: artist}
 }
 
-func TestHandleDownMovesFromNavigationToPlaylistsAtSettingsRow(t *testing.T) {
+func TestHandleDownStaysInNavigationAtSettingsRow(t *testing.T) {
 	app := testApp()
 	app.Playlists = []Playlist{{ID: "p1", Title: "Playlist"}}
 	app.NavState.Select(intPtr(4))
 
 	app.HandleDown()
 
-	if app.ActivePanel != ActivePanelPlaylists {
-		t.Fatalf("expected playlists panel, got %v", app.ActivePanel)
+	if app.ActivePanel != ActivePanelNavigation {
+		t.Fatalf("expected navigation panel, got %v", app.ActivePanel)
 	}
-	assertSelected(t, app.PlaylistState.Selected(), 0)
+	assertSelected(t, app.NavState.Selected(), 4)
 }
 
-func TestHandleUpMovesFromEmptyPlaylistsToNavigationSettings(t *testing.T) {
+func TestHandleUpStaysInEmptyPlaylists(t *testing.T) {
 	app := testApp()
 	app.ActivePanel = ActivePanelPlaylists
 	app.Playlists = nil
 
 	app.HandleUp()
 
-	if app.ActivePanel != ActivePanelNavigation {
-		t.Fatalf("expected navigation panel, got %v", app.ActivePanel)
+	if app.ActivePanel != ActivePanelPlaylists {
+		t.Fatalf("expected playlists panel, got %v", app.ActivePanel)
 	}
-	assertSelected(t, app.NavState.Selected(), 4)
 }
 
 func TestHandleDownOnMainAdvancesThroughTrackListAndStopsAtEnd(t *testing.T) {
@@ -58,7 +57,7 @@ func TestHandleDownOnMainAdvancesThroughTrackListAndStopsAtEnd(t *testing.T) {
 	assertSelected(t, app.MainState.Selected(), 2)
 }
 
-func TestHandleUpOnMainReturnsToSearchFromFirstTrackRow(t *testing.T) {
+func TestHandleUpOnMainStaysAtFirstTrackRow(t *testing.T) {
 	app := testApp()
 	app.ActivePanel = ActivePanelMain
 	app.CurrentTracks = []Track{track("1", "One", "A")}
@@ -66,9 +65,10 @@ func TestHandleUpOnMainReturnsToSearchFromFirstTrackRow(t *testing.T) {
 
 	app.HandleUp()
 
-	if app.ActivePanel != ActivePanelSearch {
-		t.Fatalf("expected search panel, got %v", app.ActivePanel)
+	if app.ActivePanel != ActivePanelMain {
+		t.Fatalf("expected main panel, got %v", app.ActivePanel)
 	}
+	assertSelected(t, app.MainState.Selected(), 0)
 }
 
 func TestHandleRightCyclesPlayerPanelIntoPlayerInfo(t *testing.T) {

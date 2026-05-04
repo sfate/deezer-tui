@@ -5,6 +5,7 @@ type Name string
 const (
 	Aetheria Name = "Aetheria"
 	Gruvbox  Name = "Gruvbox"
+	Winamp   Name = "Winamp"
 
 	// Deprecated names kept so existing config files migrate cleanly.
 	SpotifyDark Name = "SpotifyDark"
@@ -69,6 +70,24 @@ var schemes = []Scheme{
 			Purple:         "#d3869b",
 		},
 	},
+	{
+		Name:  Winamp,
+		Label: "Winamp",
+		Palette: Palette{
+			BackgroundHard: "#000000",
+			Background:     "#1b1b1b",
+			Border:         "#6f6f6f",
+			TextStrong:     "#f2f2f2",
+			Text:           "#c8c8c8",
+			TextMuted:      "#7f7f7f",
+			Yellow:         "#ffd95a",
+			Blue:           "#2f7dff",
+			Aqua:           "#00a8ff",
+			Green:          "#00ff66",
+			Orange:         "#ff9f1a",
+			Purple:         "#b37dff",
+		},
+	},
 }
 
 func All() []Scheme {
@@ -79,8 +98,8 @@ func All() []Scheme {
 
 func Normalize(name Name) Name {
 	switch name {
-	case Gruvbox:
-		return Gruvbox
+	case Gruvbox, Winamp:
+		return name
 	case Aetheria, SpotifyDark, NcmpcppBlue, "":
 		return Aetheria
 	default:

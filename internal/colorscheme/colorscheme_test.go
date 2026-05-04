@@ -19,17 +19,28 @@ func TestLookupReturnsDeclaredPalette(t *testing.T) {
 	if scheme.Palette.Background != "#282828" {
 		t.Fatalf("expected gruvbox background, got %s", scheme.Palette.Background)
 	}
+
+	scheme = Lookup(Winamp)
+	if scheme.Name != Winamp {
+		t.Fatalf("expected winamp scheme, got %q", scheme.Name)
+	}
+	if scheme.Palette.Green != "#00ff66" {
+		t.Fatalf("expected winamp display green, got %s", scheme.Palette.Green)
+	}
 }
 
 func TestNextCyclesSchemes(t *testing.T) {
 	if got := Next(Aetheria, 1); got != Gruvbox {
 		t.Fatalf("expected next aetheria theme to be gruvbox, got %q", got)
 	}
-	if got := Next(Aetheria, -1); got != Gruvbox {
-		t.Fatalf("expected previous aetheria theme to wrap to gruvbox, got %q", got)
+	if got := Next(Gruvbox, 1); got != Winamp {
+		t.Fatalf("expected next gruvbox theme to be winamp, got %q", got)
 	}
-	if got := Next(Gruvbox, 1); got != Aetheria {
-		t.Fatalf("expected next gruvbox theme to wrap to aetheria, got %q", got)
+	if got := Next(Winamp, 1); got != Aetheria {
+		t.Fatalf("expected next winamp theme to wrap to aetheria, got %q", got)
+	}
+	if got := Next(Aetheria, -1); got != Winamp {
+		t.Fatalf("expected previous aetheria theme to wrap to winamp, got %q", got)
 	}
 }
 
