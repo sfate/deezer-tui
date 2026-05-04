@@ -61,14 +61,16 @@ func (f *fakeLoader) Search(_ context.Context, query string) (SearchData, error)
 type fakePlaybackRuntime struct {
 	started     []string
 	qualities   []deezer.AudioQuality
+	seeked      []uint64
 	prebuffered []string
 	session     *fakePlaybackSession
 	startErr    error
 }
 
-func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
+func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, _ player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
 	f.qualities = append(f.qualities, quality)
+	f.seeked = append(f.seeked, seekMS)
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -774,6 +776,146 @@ func TestRepeatKeyCyclesRepeatMode(t *testing.T) {
 	updated = nextModel.(Model)
 	if updated.app.RepeatMode != app.RepeatModeOff {
 		t.Fatalf("expected repeat off, got %v", updated.app.RepeatMode)
+	}
+}
+
+func TestSeekForwardRestartsCurrentTrackAtNewPosition(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQuality320,
+		CurrentMS: 30_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "."}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected seek playback command")
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "track-1" {
+		t.Fatalf("expected current track to restart, got %#v", runtime.started)
+	}
+	if len(runtime.seeked) != 1 || runtime.seeked[0] != 40_000 {
+		t.Fatalf("expected seek to 40s, got %#v", runtime.seeked)
+	}
+}
+
+func TestSeekBackwardClampsToStart(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQuality320,
+		CurrentMS: 3_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: ","}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected seek playback command")
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.seeked) != 1 || runtime.seeked[0] != 0 {
+		t.Fatalf("expected seek to clamp to start, got %#v", runtime.seeked)
+	}
+}
+
+func TestSeekIsIgnoredForFlacPlayback(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQualityFlac
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQualityFlac,
+		CurrentMS: 30_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "."}))
+	updated := nextModel.(Model)
+	if cmd != nil {
+		t.Fatal("did not expect seek command for FLAC")
+	}
+	if !strings.Contains(updated.app.StatusMessage, "FLAC") {
+		t.Fatalf("expected FLAC seek status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestQualitySwitchDownPreservesPosition(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQuality320,
+		CurrentMS: 45_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "["}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected quality switch command")
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQuality128 {
+		t.Fatalf("expected switch to 128 kbps, got %#v", runtime.qualities)
+	}
+	if len(runtime.seeked) != 1 || runtime.seeked[0] != 45_000 {
+		t.Fatalf("expected quality switch to preserve position, got %#v", runtime.seeked)
+	}
+}
+
+func TestQualitySwitchToFlacRestartsAtBeginning(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQuality320,
+		CurrentMS: 45_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "]"}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected quality switch command")
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQualityFlac {
+		t.Fatalf("expected switch to FLAC, got %#v", runtime.qualities)
+	}
+	if len(runtime.seeked) != 1 || runtime.seeked[0] != 0 {
+		t.Fatalf("expected FLAC switch to restart from beginning, got %#v", runtime.seeked)
 	}
 }
 

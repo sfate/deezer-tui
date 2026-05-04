@@ -25,14 +25,14 @@ func newPlayerRuntime(loader Loader) PlayerRuntime {
 	}
 }
 
-func (r *defaultPlayerRuntime) Start(trackID string, quality deezer.AudioQuality, handler player.EventHandler) (PlaybackSession, error) {
+func (r *defaultPlayerRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error) {
 	session := player.StartTrackPipeline(
 		context.Background(),
 		r.client,
 		r.backend,
 		trackID,
 		quality,
-		0,
+		seekMS,
 		handler,
 		player.PipelineOptions{},
 	)

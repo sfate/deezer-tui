@@ -43,13 +43,13 @@ func newPlayerRuntime(loader Loader) PlayerRuntime {
 	}
 }
 
-func (r *defaultPlayerRuntime) Start(trackID string, quality deezer.AudioQuality, handler player.EventHandler) (PlaybackSession, error) {
+func (r *defaultPlayerRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error) {
 	session := &darwinPlaybackSession{
 		done:    make(chan error, 1),
 		volume:  1,
 		manager: r.manager,
 	}
-	go session.run(r.client, r.prebuffer, trackID, quality, handler)
+	go session.run(r.client, r.prebuffer, trackID, quality, seekMS, handler)
 	return session, nil
 }
 
@@ -72,7 +72,7 @@ type darwinPlaybackSession struct {
 	finished bool
 }
 
-func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPrebufferStore, trackID string, quality deezer.AudioQuality, handler player.EventHandler) {
+func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPrebufferStore, trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) {
 	defer close(s.done)
 
 	ctx := context.Background()
@@ -88,12 +88,21 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 	}()
 
 	meta := prepared.Meta
+	initialMS := seekMS
+	if meta.DurationSecs != nil {
+		totalMS := *meta.DurationSecs * 1000
+		if totalMS == 0 {
+			initialMS = 0
+		} else if initialMS >= totalMS {
+			initialMS = totalMS - 1
+		}
+	}
 	if handler.OnTrackChanged != nil {
-		handler.OnTrackChanged(meta, quality, 0)
+		handler.OnTrackChanged(meta, quality, initialMS)
 	}
 	s.file = prepared.File
 
-	token, finishCh, err := s.manager.play(s.file, s.volume)
+	token, finishCh, err := s.manager.play(s.file, s.volume, initialMS)
 	if err != nil {
 		s.done <- err
 		return
@@ -118,7 +127,7 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 		if meta.DurationSecs != nil {
 			total = *meta.DurationSecs * 1000
 		}
-		handler.OnPlaybackProgress(0, total)
+		handler.OnPlaybackProgress(initialMS, total)
 	}
 
 	err = <-finishCh
@@ -230,7 +239,7 @@ func newDarwinHelperManager() *darwinHelperManager {
 	}
 }
 
-func (m *darwinHelperManager) play(path string, volume float32) (int, <-chan error, error) {
+func (m *darwinHelperManager) play(path string, volume float32, seekMS uint64) (int, <-chan error, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -252,7 +261,7 @@ func (m *darwinHelperManager) play(path string, volume float32) (int, <-chan err
 		done:  make(chan error, 1),
 	}
 	m.current = handle
-	if err := m.sendLocked(fmt.Sprintf("play\t%d\t%.4f\t%s", token, volume, path)); err != nil {
+	if err := m.sendLocked(fmt.Sprintf("play\t%d\t%.4f\t%d\t%s", token, volume, seekMS, path)); err != nil {
 		return 0, nil, err
 	}
 	return token, handle.done, nil

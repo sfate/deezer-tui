@@ -82,7 +82,7 @@ func stopCurrent(report: Bool) {
     currentToken = 0
 }
 
-func playTrack(token: Int, volume: Float, path: String) {
+func playTrack(token: Int, volume: Float, seekMS: Int, path: String) {
     stopCurrent(report: false)
     warmUpOutput()
     do {
@@ -93,7 +93,10 @@ func playTrack(token: Int, volume: Float, path: String) {
         delegate.token = token
         player.delegate = delegate
         player.prepareToPlay()
-        if player.duration > startupTrimSeconds + 0.05 {
+        let requestedStart = max(0, TimeInterval(seekMS) / 1000.0)
+        if requestedStart > 0 && requestedStart < player.duration {
+            player.currentTime = requestedStart
+        } else if player.duration > startupTrimSeconds + 0.05 {
             player.currentTime = startupTrimSeconds
         }
         currentPlayer = player
@@ -115,8 +118,8 @@ DispatchQueue.global(qos: .userInitiated).async {
         DispatchQueue.main.async {
             switch parts.first {
             case "play":
-                if parts.count >= 4, let token = Int(parts[1]), let volume = Float(parts[2]) {
-                    playTrack(token: token, volume: volume, path: parts[3])
+                if parts.count >= 5, let token = Int(parts[1]), let volume = Float(parts[2]), let seekMS = Int(parts[3]) {
+                    playTrack(token: token, volume: volume, seekMS: seekMS, path: parts[4])
                 }
             case "pause":
                 currentPlayer?.pause()

@@ -34,6 +34,8 @@ var (
 	gruvboxPurple = "#b18bb8"
 )
 
+const seekStepMS uint64 = 10_000
+
 type bootstrapLoadedMsg struct {
 	playlists []app.Playlist
 }
@@ -455,6 +457,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.handlePrevious()
 		case "r":
 			m.cycleRepeatMode()
+		case ",":
+			return m, m.seekCurrentTrack(-int64(seekStepMS))
+		case ".":
+			return m, m.seekCurrentTrack(int64(seekStepMS))
+		case "[":
+			return m, m.switchCurrentQuality(-1)
+		case "]":
+			return m, m.switchCurrentQuality(1)
 		case "+":
 			m.adjustVolume(5)
 		case "-":
@@ -955,10 +965,18 @@ func (m *Model) persistConfig() {
 }
 
 func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
-	return m.startTrackPlaybackWithQuality(trackID, qualityFromConfig(m.app.Config.DefaultQuality), true)
+	return m.startTrackPlaybackWithQualityAndSeek(trackID, qualityFromConfig(m.app.Config.DefaultQuality), 0, true)
 }
 
 func (m *Model) startTrackPlaybackWithQuality(trackID string, quality deezer.AudioQuality, resetRetries bool) tea.Cmd {
+	return m.startTrackPlaybackWithQualityAndSeek(trackID, quality, 0, resetRetries)
+}
+
+func (m *Model) startTrackPlaybackAt(trackID string, quality deezer.AudioQuality, seekMS uint64, resetRetries bool) tea.Cmd {
+	return m.startTrackPlaybackWithQualityAndSeek(trackID, quality, seekMS, resetRetries)
+}
+
+func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality deezer.AudioQuality, seekMS uint64, resetRetries bool) tea.Cmd {
 	if strings.TrimSpace(trackID) == "" {
 		return nil
 	}
@@ -989,9 +1007,68 @@ func (m *Model) startTrackPlaybackWithQuality(trackID string, quality deezer.Aud
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
 	return tea.Batch(
-		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, m.playbackEvents),
+		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, seekMS, m.playbackEvents),
 		m.maybeLoadMoreFlowForTail(),
 	)
+}
+
+func (m *Model) seekCurrentTrack(deltaMS int64) tea.Cmd {
+	if m.app.NowPlaying == nil || strings.TrimSpace(m.currentTrackID) == "" {
+		m.app.StatusMessage = "Nothing playing"
+		return nil
+	}
+	if m.currentQuality == deezer.AudioQualityFlac {
+		m.app.StatusMessage = "Seeking is not supported for FLAC playback"
+		return nil
+	}
+	seekMS := m.currentPlaybackPositionMS()
+	if deltaMS < 0 {
+		step := uint64(-deltaMS)
+		if step >= seekMS {
+			seekMS = 0
+		} else {
+			seekMS -= step
+		}
+	} else {
+		seekMS += uint64(deltaMS)
+	}
+	if total := m.app.NowPlaying.TotalMS; total > 0 && seekMS >= total {
+		seekMS = total - 1
+	}
+	m.app.StatusMessage = fmt.Sprintf("Seeking to %s", formatClock(seekMS))
+	return m.startTrackPlaybackAt(m.currentTrackID, m.currentQuality, seekMS, true)
+}
+
+func (m *Model) switchCurrentQuality(direction int) tea.Cmd {
+	if m.app.NowPlaying == nil || strings.TrimSpace(m.currentTrackID) == "" {
+		m.app.StatusMessage = "Nothing playing"
+		return nil
+	}
+	next := nextDeezerQuality(m.currentQuality, direction)
+	if next == m.currentQuality {
+		m.app.StatusMessage = fmt.Sprintf("Quality: %s", qualityLabel(configQualityFromDeezer(m.currentQuality)))
+		return nil
+	}
+	seekMS := m.currentPlaybackPositionMS()
+	if next == deezer.AudioQualityFlac {
+		seekMS = 0
+	}
+	m.app.StatusMessage = fmt.Sprintf("Quality: %s", qualityLabel(configQualityFromDeezer(next)))
+	return m.startTrackPlaybackAt(m.currentTrackID, next, seekMS, true)
+}
+
+func (m Model) currentPlaybackPositionMS() uint64 {
+	if m.app.NowPlaying == nil {
+		return 0
+	}
+	current := m.app.NowPlaying.CurrentMS
+	if m.progressActive && m.app.IsPlaying && !m.progressSince.IsZero() {
+		current = m.progressBaseMS + uint64(time.Since(m.progressSince).Milliseconds())
+	}
+	if total := m.app.NowPlaying.TotalMS; total > 0 && current >= total {
+		return total - 1
+	}
+	return current
 }
 
 func (m *Model) retryPlaybackAfterError(err error) tea.Cmd {
@@ -1272,9 +1349,9 @@ func (m Model) renderSearchBar() string {
 }
 
 func (m Model) renderPlaybar() string {
-	controls := " space play/pause | n/p next prev | r repeat | +/- volume "
+	controls := " space play/pause | n/p next prev | ,/. seek | [/] quality | r repeat | +/- volume "
 	if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
-		controls = " space play/pause | n/p next prev | r repeat | s sort | +/- volume "
+		controls = " space play/pause | n/p next prev | ,/. seek | [/] quality | r repeat | s sort | +/- volume "
 	}
 	left := paint(controls, gruvboxFg1, "")
 	stateColor := gruvboxFg4
@@ -1489,7 +1566,7 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
-func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, events chan tea.Msg) tea.Cmd {
+func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, events chan tea.Msg) tea.Cmd {
 	if runtime == nil {
 		return nil
 	}
@@ -1508,7 +1585,7 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 				events <- playbackErrorMsg{playID: playID, err: err}
 			},
 		}
-		session, err := runtime.Start(trackID, quality, handler)
+		session, err := runtime.Start(trackID, quality, seekMS, handler)
 		if err != nil {
 			return playbackStartFailedMsg{playID: playID, trackID: trackID, quality: quality, err: err}
 		}
@@ -1649,6 +1726,26 @@ func nextRepeatMode(mode app.RepeatMode) app.RepeatMode {
 	default:
 		return app.RepeatModeOff
 	}
+}
+
+func nextDeezerQuality(current deezer.AudioQuality, direction int) deezer.AudioQuality {
+	qualities := []deezer.AudioQuality{deezer.AudioQuality128, deezer.AudioQuality320, deezer.AudioQualityFlac}
+	idx := 1
+	for i, quality := range qualities {
+		if quality == current {
+			idx = i
+			break
+		}
+	}
+	if direction < 0 {
+		idx--
+		if idx < 0 {
+			idx = 0
+		}
+	} else if direction > 0 {
+		idx = min(idx+1, len(qualities)-1)
+	}
+	return qualities[idx]
 }
 
 func qualityFromConfig(q config.AudioQuality) deezer.AudioQuality {

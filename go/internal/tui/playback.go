@@ -16,7 +16,7 @@ type PlaybackSession interface {
 }
 
 type PlayerRuntime interface {
-	Start(trackID string, quality deezer.AudioQuality, handler player.EventHandler) (PlaybackSession, error)
+	Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error)
 }
 
 type PrebufferingRuntime interface {
