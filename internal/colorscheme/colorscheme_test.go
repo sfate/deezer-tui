@@ -2,8 +2,8 @@ package colorscheme
 
 import "testing"
 
-func TestNormalizeMigratesDeprecatedNamesToAetheria(t *testing.T) {
-	for _, name := range []Name{"", SpotifyDark, NcmpcppBlue, "unknown"} {
+func TestNormalizeFallsBackToAetheria(t *testing.T) {
+	for _, name := range []Name{"", "unknown"} {
 		if got := Normalize(name); got != Aetheria {
 			t.Fatalf("expected %q to normalize to %q, got %q", name, Aetheria, got)
 		}
@@ -24,7 +24,7 @@ func TestLookupReturnsDeclaredPalette(t *testing.T) {
 	if scheme.Name != Winamp {
 		t.Fatalf("expected winamp scheme, got %q", scheme.Name)
 	}
-	if scheme.Palette.Green != "#00ff66" {
+	if scheme.Palette.Green != "#27ff57" {
 		t.Fatalf("expected winamp display green, got %s", scheme.Palette.Green)
 	}
 }

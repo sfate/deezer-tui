@@ -1029,7 +1029,7 @@ func TestQualitySwitchDownPreservesPosition(t *testing.T) {
 		TotalMS:   120_000,
 	}
 
-	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "["}))
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "u"}))
 	updated := nextModel.(Model)
 	if cmd == nil {
 		t.Fatal("expected quality switch command")
@@ -1058,7 +1058,7 @@ func TestQualitySwitchToFlacRestartsAtBeginning(t *testing.T) {
 		TotalMS:   120_000,
 	}
 
-	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "]"}))
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "i"}))
 	updated := nextModel.(Model)
 	if cmd == nil {
 		t.Fatal("expected quality switch command")
@@ -1070,6 +1070,54 @@ func TestQualitySwitchToFlacRestartsAtBeginning(t *testing.T) {
 	}
 	if len(runtime.seeked) != 1 || runtime.seeked[0] != 0 {
 		t.Fatalf("expected FLAC switch to restart from beginning, got %#v", runtime.seeked)
+	}
+}
+
+func TestRepeatedNextStartsOnlyLatestRequestedTrack(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+		{ID: "3", Title: "Three", Artist: "C"},
+		{ID: "4", Title: "Four", Artist: "D"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "n"}))
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected delayed next-track command")
+	}
+	firstRequest := updated.playbackRequest
+
+	nextModel, _ = updated.Update(tea.KeyPressMsg(tea.Key{Text: "n"}))
+	updated = nextModel.(Model)
+	nextModel, _ = updated.Update(tea.KeyPressMsg(tea.Key{Text: "n"}))
+	updated = nextModel.(Model)
+
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 3 {
+		t.Fatalf("expected queue index to advance to latest requested track, got %#v", updated.app.QueueIndex)
+	}
+	if len(runtime.started) != 0 {
+		t.Fatalf("did not expect intermediate tracks to start, got %#v", runtime.started)
+	}
+
+	nextModel, staleCmd := updated.Update(scheduledPlaybackMsg{requestID: firstRequest})
+	updated = nextModel.(Model)
+	if staleCmd != nil {
+		t.Fatal("did not expect stale scheduled playback to start")
+	}
+
+	nextModel, startCmd := updated.Update(scheduledPlaybackMsg{requestID: updated.playbackRequest})
+	updated = nextModel.(Model)
+	if startCmd == nil {
+		t.Fatal("expected latest scheduled playback to start")
+	}
+	_, _ = updated.Update(firstBatchMessage(startCmd))
+	if len(runtime.started) != 1 || runtime.started[0] != "4" {
+		t.Fatalf("expected only latest requested track to start, got %#v", runtime.started)
 	}
 }
 

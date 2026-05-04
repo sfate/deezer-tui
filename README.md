@@ -39,8 +39,8 @@ P                  Previous track
 R                  Cycle repeat mode
 ,                  Seek back 10 seconds
 .                  Seek forward 10 seconds
-[                  Lower playback quality
-]                  Raise playback quality
+U                  Lower playback quality
+I                  Raise playback quality
 + / -              Volume up/down
 S                  Toggle Favorites sort direction
 /                  Search
@@ -103,7 +103,7 @@ The app will fill defaults for missing settings.
 
 ## Colors
 
-Currently app has two themes: [Aetheria](https://github.com/JJDizz1L/aetheria) and [Gruvbox](https://github.com/morhetz/gruvbox).
+Currently app has three themes: [Aetheria](https://github.com/JJDizz1L/aetheria), [Gruvbox](https://github.com/morhetz/gruvbox), and Winamp.
 Theme can be set in the config file or switched in-app. The default theme is Aetheria:
 ```json
 {

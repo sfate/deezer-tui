@@ -20,7 +20,10 @@ import (
 
 var activePalette = colorscheme.Lookup(colorscheme.Aetheria).Palette
 
-const seekStepMS uint64 = 10_000
+const (
+	seekStepMS               uint64 = 10_000
+	manualPlaybackStartDelay        = 90 * time.Millisecond
+)
 
 type bootstrapLoadedMsg struct {
 	playlists []app.Playlist
@@ -88,6 +91,10 @@ type playbackFinishedMsg struct {
 
 type playbackTickMsg struct{}
 
+type scheduledPlaybackMsg struct {
+	requestID int
+}
+
 type artworkLoadedMsg struct {
 	url string
 	art string
@@ -118,6 +125,11 @@ type Model struct {
 	height           int
 	nextPlaybackID   int
 	currentPlayID    int
+	playbackRequest  int
+	pendingTrackID   string
+	pendingQuality   deezer.AudioQuality
+	pendingSeekMS    uint64
+	pendingReset     bool
 	currentTrackID   string
 	currentQuality   deezer.AudioQuality
 	playbackRetries  int
@@ -421,6 +433,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(playbackTickCmd(), crossfadeCmd)
 		}
 		return m, playbackTickCmd()
+	case scheduledPlaybackMsg:
+		if msg.requestID != m.playbackRequest || strings.TrimSpace(m.pendingTrackID) == "" {
+			return m, nil
+		}
+		trackID := m.pendingTrackID
+		quality := m.pendingQuality
+		seekMS := m.pendingSeekMS
+		resetRetries := m.pendingReset
+		m.pendingTrackID = ""
+		return m, m.startTrackPlaybackWithQualityAndSeek(trackID, quality, seekMS, resetRetries)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -473,9 +495,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.seekCurrentTrack(-int64(seekStepMS))
 		case ".":
 			return m, m.seekCurrentTrack(int64(seekStepMS))
-		case "[":
+		case "u":
 			return m, m.switchCurrentQuality(-1)
-		case "]":
+		case "i":
 			return m, m.switchCurrentQuality(1)
 		case "+":
 			m.adjustVolume(5)
@@ -994,7 +1016,7 @@ func (m *Model) handleNext() tea.Cmd {
 		nextIndex := current + 1
 		m.app.QueueIndex = intPtr(nextIndex)
 		m.app.QueueState.Select(intPtr(nextIndex))
-		return m.startTrackPlayback(m.app.QueueTracks[nextIndex].ID)
+		return m.scheduleTrackPlayback(m.app.QueueTracks[nextIndex].ID, qualityFromConfig(m.app.Config.DefaultQuality), 0, true)
 	}
 	if m.app.ShouldLoadMoreFlow() {
 		m.app.FlowLoadingMore = true
@@ -1015,7 +1037,7 @@ func (m *Model) handlePrevious() tea.Cmd {
 	prevIndex := current - 1
 	m.app.QueueIndex = intPtr(prevIndex)
 	m.app.QueueState.Select(intPtr(prevIndex))
-	return m.startTrackPlayback(m.app.QueueTracks[prevIndex].ID)
+	return m.scheduleTrackPlayback(m.app.QueueTracks[prevIndex].ID, qualityFromConfig(m.app.Config.DefaultQuality), 0, true)
 }
 
 func (m *Model) adjustVolume(delta int) {
@@ -1083,6 +1105,48 @@ func (m *Model) startTrackPlaybackWithQuality(trackID string, quality deezer.Aud
 
 func (m *Model) startTrackPlaybackAt(trackID string, quality deezer.AudioQuality, seekMS uint64, resetRetries bool) tea.Cmd {
 	return m.startTrackPlaybackWithQualityAndSeek(trackID, quality, seekMS, resetRetries)
+}
+
+func (m *Model) scheduleTrackPlayback(trackID string, quality deezer.AudioQuality, seekMS uint64, resetRetries bool) tea.Cmd {
+	if strings.TrimSpace(trackID) == "" {
+		return nil
+	}
+	if m.runtime == nil {
+		m.app.StatusMessage = "Playback runtime is not configured"
+		return nil
+	}
+	if m.session != nil {
+		m.stopCurrentSession()
+		m.session = nil
+	}
+	m.currentPlayID = 0
+	m.progressActive = false
+	m.bufferingPercent = intPtr(0)
+	m.progressBaseMS = 0
+	m.progressSince = time.Time{}
+	m.app.AutoTransitionArmed = false
+	m.pauseRequested = false
+	m.app.NowPlaying = nil
+	m.artworkANSI = ""
+	m.artworkURL = ""
+	if resetRetries {
+		m.playbackRetries = 0
+	}
+	m.playbackRequest++
+	m.pendingTrackID = ""
+	m.currentTrackID = trackID
+	m.currentQuality = quality
+	m.app.IsPlaying = true
+	m.app.StatusMessage = "Starting playback..."
+	m.playbackRequest++
+	m.pendingTrackID = trackID
+	m.pendingQuality = quality
+	m.pendingSeekMS = seekMS
+	m.pendingReset = resetRetries
+	requestID := m.playbackRequest
+	return tea.Tick(manualPlaybackStartDelay, func(time.Time) tea.Msg {
+		return scheduledPlaybackMsg{requestID: requestID}
+	})
 }
 
 func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality deezer.AudioQuality, seekMS uint64, resetRetries bool) tea.Cmd {
@@ -1562,9 +1626,9 @@ func (m Model) renderSearchBar() string {
 }
 
 func (m Model) renderPlaybar() string {
-	controls := " space play/pause | n/p next prev | ,/. seek | [/] quality | r repeat | +/- volume "
+	controls := " space play/pause | n/p next prev | ,/. seek | u/i quality | r repeat | +/- volume "
 	if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
-		controls = " space play/pause | n/p next prev | ,/. seek | [/] quality | r repeat | s sort | +/- volume "
+		controls = " space play/pause | n/p next prev | ,/. seek | u/i quality | r repeat | s sort | +/- volume "
 	}
 	left := paint(controls, activePalette.Text, "")
 	stateColor := activePalette.TextMuted
