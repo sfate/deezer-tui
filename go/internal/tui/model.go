@@ -453,6 +453,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.handleNext()
 		case "p":
 			return m, m.handlePrevious()
+		case "r":
+			m.cycleRepeatMode()
 		case "+":
 			m.adjustVolume(5)
 		case "-":
@@ -914,6 +916,11 @@ func (m *Model) adjustVolume(delta int) {
 	m.app.StatusMessage = fmt.Sprintf("Volume: %d%%", m.app.Volume)
 }
 
+func (m *Model) cycleRepeatMode() {
+	m.app.RepeatMode = nextRepeatMode(m.app.RepeatMode)
+	m.app.StatusMessage = fmt.Sprintf("Repeat: %s", repeatModeLabel(m.app.RepeatMode))
+}
+
 func (m *Model) adjustSelectedSetting(direction int) {
 	switch derefOrZero(m.app.SettingsState.Selected()) {
 	case 0:
@@ -1049,6 +1056,14 @@ func (m *Model) maybePrebufferNextTrack() tea.Cmd {
 		if cmd := m.maybeLoadMoreFlowForTail(); cmd != nil {
 			return cmd
 		}
+		if m.app.RepeatMode == app.RepeatModeAll && len(m.app.QueueTracks) > 0 {
+			m.prebufferTrack(m.app.QueueTracks[0].ID)
+			return nil
+		}
+		if m.app.RepeatMode == app.RepeatModeOne && *m.app.QueueIndex >= 0 && *m.app.QueueIndex < len(m.app.QueueTracks) {
+			m.prebufferTrack(m.app.QueueTracks[*m.app.QueueIndex].ID)
+			return nil
+		}
 		if runtime, ok := m.runtime.(PrebufferingRuntime); ok {
 			runtime.Prebuffer("", qualityFromConfig(m.app.Config.DefaultQuality))
 		}
@@ -1077,13 +1092,24 @@ func (m *Model) prebufferTrack(trackID string) {
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {
-	if m.app.QueueIndex == nil {
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
 		m.app.IsPlaying = false
 		m.app.StatusMessage = "Playback finished"
 		return nil
 	}
 
 	current := *m.app.QueueIndex
+	if current < 0 || current >= len(m.app.QueueTracks) {
+		m.app.IsPlaying = false
+		m.app.StatusMessage = "Playback finished"
+		return nil
+	}
+
+	if m.app.RepeatMode == app.RepeatModeOne {
+		m.app.QueueState.Select(intPtr(current))
+		return m.startTrackPlayback(m.app.QueueTracks[current].ID)
+	}
+
 	if current+1 < len(m.app.QueueTracks) {
 		nextIndex := current + 1
 		m.app.QueueIndex = intPtr(nextIndex)
@@ -1095,6 +1121,12 @@ func (m *Model) handlePlaybackFinished() tea.Cmd {
 		m.app.FlowLoadingMore = true
 		m.app.StatusMessage = "Loading more Flow..."
 		return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, true)
+	}
+
+	if m.app.RepeatMode == app.RepeatModeAll {
+		m.app.QueueIndex = intPtr(0)
+		m.app.QueueState.Select(intPtr(0))
+		return m.startTrackPlayback(m.app.QueueTracks[0].ID)
 	}
 
 	m.app.IsPlaying = false
@@ -1240,9 +1272,9 @@ func (m Model) renderSearchBar() string {
 }
 
 func (m Model) renderPlaybar() string {
-	controls := " space play/pause | n/p next prev | +/- volume "
+	controls := " space play/pause | n/p next prev | r repeat | +/- volume "
 	if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
-		controls = " space play/pause | n/p next prev | s sort | +/- volume "
+		controls = " space play/pause | n/p next prev | r repeat | s sort | +/- volume "
 	}
 	left := paint(controls, gruvboxFg1, "")
 	stateColor := gruvboxFg4
@@ -1605,6 +1637,17 @@ func repeatModeLabel(mode app.RepeatMode) string {
 		return "One"
 	default:
 		return "Off"
+	}
+}
+
+func nextRepeatMode(mode app.RepeatMode) app.RepeatMode {
+	switch mode {
+	case app.RepeatModeOff:
+		return app.RepeatModeAll
+	case app.RepeatModeAll:
+		return app.RepeatModeOne
+	default:
+		return app.RepeatModeOff
 	}
 }
 

@@ -755,6 +755,28 @@ func TestTogglePlayPauseControlsSession(t *testing.T) {
 	}
 }
 
+func TestRepeatKeyCyclesRepeatMode(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "r"}))
+	updated := nextModel.(Model)
+	if updated.app.RepeatMode != app.RepeatModeAll {
+		t.Fatalf("expected repeat all, got %v", updated.app.RepeatMode)
+	}
+
+	nextModel, _ = updated.Update(tea.KeyPressMsg(tea.Key{Text: "r"}))
+	updated = nextModel.(Model)
+	if updated.app.RepeatMode != app.RepeatModeOne {
+		t.Fatalf("expected repeat one, got %v", updated.app.RepeatMode)
+	}
+
+	nextModel, _ = updated.Update(tea.KeyPressMsg(tea.Key{Text: "r"}))
+	updated = nextModel.(Model)
+	if updated.app.RepeatMode != app.RepeatModeOff {
+		t.Fatalf("expected repeat off, got %v", updated.app.RepeatMode)
+	}
+}
+
 func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
@@ -773,6 +795,91 @@ func TestPlaybackFinishedAdvancesQueue(t *testing.T) {
 	}
 	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
 		t.Fatal("expected queue index to advance")
+	}
+}
+
+func TestPlaybackFinishedRepeatsCurrentTrackInRepeatOneMode(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.RepeatMode = app.RepeatModeOne
+	model.currentPlayID = 1
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: nil})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected repeat-one playback command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected queue index to stay on current track, got %#v", updated.app.QueueIndex)
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "2" {
+		t.Fatalf("expected current track to restart, got %#v", runtime.started)
+	}
+}
+
+func TestPlaybackFinishedWrapsQueueInRepeatAllMode(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.RepeatMode = app.RepeatModeAll
+	model.currentPlayID = 1
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: nil})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected repeat-all playback command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 0 {
+		t.Fatalf("expected queue index to wrap to first track, got %#v", updated.app.QueueIndex)
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "1" {
+		t.Fatalf("expected first track to start after wrap, got %#v", runtime.started)
+	}
+}
+
+func TestPlaybackFinishedLoadsMoreFlowBeforeRepeatAllWrap(t *testing.T) {
+	loader := &fakeLoader{
+		flow: []app.Track{{ID: "3", Title: "Three", Artist: "C"}},
+	}
+	model := NewWithLoaderAndRuntime(config.Default(), loader, &fakePlaybackRuntime{})
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.RepeatMode = app.RepeatModeAll
+	model.app.IsFlowQueue = true
+	model.app.FlowNextIndex = 2
+	model.currentPlayID = 1
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: nil})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected Flow load command before repeat wrap")
+	}
+	if !updated.app.FlowLoadingMore {
+		t.Fatal("expected Flow loading to be marked active")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected queue index to remain at Flow tail, got %#v", updated.app.QueueIndex)
 	}
 }
 
