@@ -24,6 +24,46 @@ type PrebufferingRuntime interface {
 	Prebuffer(trackID string, quality deezer.AudioQuality)
 }
 
+type MediaControlCommandKind int
+
+const (
+	MediaControlPlay MediaControlCommandKind = iota
+	MediaControlPause
+	MediaControlToggle
+	MediaControlNext
+	MediaControlPrevious
+	MediaControlSetPosition
+)
+
+type MediaControlCommand struct {
+	Kind       MediaControlCommandKind
+	PositionMS uint64
+}
+
+type MediaControlState struct {
+	Playing     bool
+	Stopped     bool
+	TrackID     string
+	Title       string
+	Artist      string
+	AlbumArtURL string
+	PositionMS  uint64
+	DurationMS  uint64
+	Volume      uint16
+	CanNext     bool
+	CanPrevious bool
+	CanSeek     bool
+	RepeatMode  appRepeatMode
+}
+
+type appRepeatMode int
+
+type MediaControlRuntime interface {
+	PlayerRuntime
+	MediaControlEvents() <-chan MediaControlCommand
+	UpdateMediaControl(MediaControlState)
+}
+
 type fadeStoppingSession interface {
 	FadeOutStop(duration time.Duration)
 }

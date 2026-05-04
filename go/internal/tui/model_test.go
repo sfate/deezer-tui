@@ -65,6 +65,8 @@ type fakePlaybackRuntime struct {
 	prebuffered []string
 	session     *fakePlaybackSession
 	startErr    error
+	mediaEvents chan MediaControlCommand
+	mediaStates []MediaControlState
 }
 
 func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, _ player.EventHandler) (PlaybackSession, error) {
@@ -80,6 +82,14 @@ func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality,
 
 func (f *fakePlaybackRuntime) Prebuffer(trackID string, _ deezer.AudioQuality) {
 	f.prebuffered = append(f.prebuffered, trackID)
+}
+
+func (f *fakePlaybackRuntime) MediaControlEvents() <-chan MediaControlCommand {
+	return f.mediaEvents
+}
+
+func (f *fakePlaybackRuntime) UpdateMediaControl(state MediaControlState) {
+	f.mediaStates = append(f.mediaStates, state)
 }
 
 type fakePlaybackSession struct {
@@ -757,6 +767,77 @@ func TestTogglePlayPauseControlsSession(t *testing.T) {
 	}
 }
 
+func TestMediaControlToggleControlsSession(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	session := &fakePlaybackSession{}
+	model.session = session
+	model.app.IsPlaying = true
+
+	nextModel, _ := model.Update(mediaControlCommandMsg{command: MediaControlCommand{Kind: MediaControlToggle}})
+	updated := nextModel.(Model)
+	if !session.paused || updated.app.IsPlaying {
+		t.Fatal("expected media toggle to pause active playback")
+	}
+	if len(runtime.mediaStates) == 0 || runtime.mediaStates[len(runtime.mediaStates)-1].Playing {
+		t.Fatalf("expected media state to sync paused playback, got %#v", runtime.mediaStates)
+	}
+}
+
+func TestMediaControlSetPositionSeeksCurrentTrack(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "track-1",
+		Title:     "Song",
+		Artist:    "Artist",
+		Quality:   config.AudioQuality320,
+		CurrentMS: 30_000,
+		TotalMS:   120_000,
+	}
+
+	nextModel, cmd := model.Update(mediaControlCommandMsg{command: MediaControlCommand{Kind: MediaControlSetPosition, PositionMS: 55_000}})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected media set-position command")
+	}
+
+	nextModel, _ = updated.Update(firstBatchMessage(cmd))
+	if len(runtime.seeked) != 1 || runtime.seeked[0] != 55_000 {
+		t.Fatalf("expected media set-position to seek to 55s, got %#v", runtime.seeked)
+	}
+}
+
+func TestPlaybackTrackChangedSyncsMediaControlMetadata(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	durationSecs := uint64(180)
+	artURL := "https://example.invalid/art.jpg"
+
+	nextModel, _ := model.Update(playbackTrackChangedMsg{
+		playID:    1,
+		meta:      deezer.TrackMetadata{ID: "track-1", Title: "Song", Artist: "Artist", DurationSecs: &durationSecs, AlbumArtURL: &artURL},
+		quality:   deezer.AudioQuality320,
+		initialMS: 12_000,
+	})
+	_ = nextModel.(Model)
+
+	if len(runtime.mediaStates) == 0 {
+		t.Fatal("expected media state sync")
+	}
+	state := runtime.mediaStates[len(runtime.mediaStates)-1]
+	if state.TrackID != "track-1" || state.Title != "Song" || state.Artist != "Artist" {
+		t.Fatalf("unexpected metadata state: %#v", state)
+	}
+	if state.PositionMS != 12_000 || state.DurationMS != 180_000 || state.AlbumArtURL != artURL {
+		t.Fatalf("unexpected timing/art state: %#v", state)
+	}
+}
+
 func TestRepeatKeyCyclesRepeatMode(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 
@@ -1022,6 +1103,163 @@ func TestPlaybackFinishedLoadsMoreFlowBeforeRepeatAllWrap(t *testing.T) {
 	}
 	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
 		t.Fatalf("expected queue index to remain at Flow tail, got %#v", updated.app.QueueIndex)
+	}
+}
+
+func TestCrossfadeProgressStartsNextTrackAndFadesCurrentSession(t *testing.T) {
+	session := &fakePlaybackSession{faded: make(chan time.Duration, 1)}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.session = session
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	model.app.Config.CrossfadeEnabled = true
+	model.app.Config.CrossfadeDurationMS = 5000
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A", CurrentMS: 174_000, TotalMS: 180_000}
+
+	nextModel, cmd := model.Update(playbackProgressMsg{playID: 1, currentMS: 176_000, totalMS: 180_000})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected crossfade playback command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected crossfade to advance queue index, got %#v", updated.app.QueueIndex)
+	}
+	if !updated.app.AutoTransitionArmed {
+		t.Fatal("expected automatic transition to be armed")
+	}
+	select {
+	case got := <-session.faded:
+		if got != 5*time.Second {
+			t.Fatalf("expected 5s fade, got %s", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected current session to fade out")
+	}
+}
+
+func TestCrossfadeProgressRepeatsCurrentTrackInRepeatOneMode(t *testing.T) {
+	session := &fakePlaybackSession{faded: make(chan time.Duration, 1)}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.session = session
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	model.app.Config.CrossfadeEnabled = true
+	model.app.Config.CrossfadeDurationMS = 5000
+	model.app.RepeatMode = app.RepeatModeOne
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.NowPlaying = &app.NowPlaying{ID: "2", Title: "Two", Artist: "B", CurrentMS: 176_000, TotalMS: 180_000}
+
+	nextModel, cmd := model.Update(playbackProgressMsg{playID: 1, currentMS: 176_000, totalMS: 180_000})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected repeat-one crossfade command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected queue index to stay on repeated track, got %#v", updated.app.QueueIndex)
+	}
+	if updated.currentTrackID != "2" {
+		t.Fatalf("expected current track to restart, got %q", updated.currentTrackID)
+	}
+}
+
+func TestCrossfadeProgressWrapsQueueInRepeatAllMode(t *testing.T) {
+	session := &fakePlaybackSession{faded: make(chan time.Duration, 1)}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.session = session
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	model.app.Config.CrossfadeEnabled = true
+	model.app.Config.CrossfadeDurationMS = 5000
+	model.app.RepeatMode = app.RepeatModeAll
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.NowPlaying = &app.NowPlaying{ID: "2", Title: "Two", Artist: "B", CurrentMS: 176_000, TotalMS: 180_000}
+
+	nextModel, cmd := model.Update(playbackProgressMsg{playID: 1, currentMS: 176_000, totalMS: 180_000})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected repeat-all crossfade command")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 0 {
+		t.Fatalf("expected queue index to wrap to first track, got %#v", updated.app.QueueIndex)
+	}
+	if updated.currentTrackID != "1" {
+		t.Fatalf("expected first track to start after wrap, got %q", updated.currentTrackID)
+	}
+}
+
+func TestCrossfadeProgressLoadsMoreFlowBeforeRepeatAllWrap(t *testing.T) {
+	loader := &fakeLoader{
+		flow: []app.Track{{ID: "3", Title: "Three", Artist: "C"}},
+	}
+	session := &fakePlaybackSession{faded: make(chan time.Duration, 1)}
+	model := NewWithLoaderAndRuntime(config.Default(), loader, &fakePlaybackRuntime{})
+	model.session = session
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	model.app.Config.CrossfadeEnabled = true
+	model.app.Config.CrossfadeDurationMS = 5000
+	model.app.RepeatMode = app.RepeatModeAll
+	model.app.IsFlowQueue = true
+	model.app.FlowNextIndex = 2
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.NowPlaying = &app.NowPlaying{ID: "2", Title: "Two", Artist: "B", CurrentMS: 176_000, TotalMS: 180_000}
+
+	nextModel, cmd := model.Update(playbackProgressMsg{playID: 1, currentMS: 176_000, totalMS: 180_000})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected Flow load command before crossfade repeat wrap")
+	}
+	if !updated.app.FlowLoadingMore {
+		t.Fatal("expected Flow loading to be marked active")
+	}
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 1 {
+		t.Fatalf("expected queue index to remain at Flow tail, got %#v", updated.app.QueueIndex)
+	}
+}
+
+func TestCrossfadeProgressDoesNothingWhenDisabled(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.session = &fakePlaybackSession{}
+	model.currentPlayID = 1
+	model.app.IsPlaying = true
+	model.app.Config.CrossfadeEnabled = false
+	model.app.Config.CrossfadeDurationMS = 5000
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.NowPlaying = &app.NowPlaying{ID: "1", Title: "One", Artist: "A", CurrentMS: 176_000, TotalMS: 180_000}
+
+	nextModel, _ := model.Update(playbackProgressMsg{playID: 1, currentMS: 176_000, totalMS: 180_000})
+	updated := nextModel.(Model)
+	if updated.app.QueueIndex == nil || *updated.app.QueueIndex != 0 {
+		t.Fatalf("did not expect queue index to advance, got %#v", updated.app.QueueIndex)
+	}
+	if updated.app.AutoTransitionArmed {
+		t.Fatal("did not expect automatic transition to arm")
 	}
 }
 

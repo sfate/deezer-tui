@@ -109,6 +109,10 @@ type artworkLoadedMsg struct {
 
 type loadingTickMsg struct{}
 
+type mediaControlCommandMsg struct {
+	command MediaControlCommand
+}
+
 type Model struct {
 	app              *app.App
 	loader           Loader
@@ -195,10 +199,11 @@ func NewWithLoaderAndRuntime(cfg config.Config, loader Loader, runtime PlayerRun
 }
 
 func (m Model) Init() tea.Cmd {
+	mediaCmd := m.listenMediaControlCmd()
 	if m.loader == nil {
-		return nil
+		return mediaCmd
 	}
-	return tea.Batch(bootstrapCmd(m.loader), loadingTickCmd())
+	return tea.Batch(bootstrapCmd(m.loader), loadingTickCmd(), mediaCmd)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -259,6 +264,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadingTickCmd()
 		}
 		return m, nil
+	case mediaControlCommandMsg:
+		return m, tea.Batch(m.handleMediaControlCommand(msg.command), m.listenMediaControlCmd())
 	case searchLoadedMsg:
 		m.app.IsSearching = false
 		m.app.SearchQuery = msg.query
@@ -281,10 +288,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentPlayID = msg.playID
 		m.session.SetVolume(float32(m.app.Volume) / 100)
 		m.app.IsPlaying = true
+		m.syncMediaControl()
 		m.progressActive = false
 		m.bufferingPercent = intPtr(0)
 		m.progressBaseMS = 0
 		m.progressSince = time.Time{}
+		m.app.AutoTransitionArmed = false
 		m.app.StatusMessage = "Buffering..."
 		if m.pauseRequested {
 			m.session.Pause()
@@ -335,6 +344,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.app.IsPlaying {
 			m.app.StatusMessage = "Playing"
 		}
+		m.syncMediaControl()
 		m.artworkANSI = ""
 		m.artworkURL = ""
 		nextCmd := listenPlaybackEventCmd(m.playbackEvents)
@@ -361,11 +371,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.totalMS > 0 {
 			m.app.NowPlaying.TotalMS = msg.totalMS
 		}
+		m.syncMediaControl()
 		m.bufferingPercent = nil
 		m.progressBaseMS = msg.currentMS
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
 		m.app.StatusMessage = "Playing"
+		crossfadeCmd := m.maybeStartCrossfadeTransition(msg.currentMS, m.app.NowPlaying.TotalMS)
+		if crossfadeCmd != nil {
+			if m.progressActive {
+				return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd(), crossfadeCmd)
+			}
+			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), crossfadeCmd)
+		}
 		loadMoreCmd := m.maybePrebufferNextTrack()
 		if m.progressActive {
 			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), playbackTickCmd(), loadMoreCmd)
@@ -388,9 +406,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.retryPlaybackAfterError(msg.err)
 		}
 		if errors.Is(msg.err, context.Canceled) {
+			m.syncMediaControl()
 			return m, nil
 		}
-		return m, m.handlePlaybackFinished()
+		cmd := m.handlePlaybackFinished()
+		m.syncMediaControl()
+		return m, cmd
 	case artworkLoadedMsg:
 		if msg.url == "" || msg.url != m.artworkURL {
 			return m, nil
@@ -408,6 +429,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			current = m.app.NowPlaying.TotalMS
 		}
 		m.app.NowPlaying.CurrentMS = current
+		m.syncMediaControl()
+		crossfadeCmd := m.maybeStartCrossfadeTransition(current, m.app.NowPlaying.TotalMS)
+		if crossfadeCmd != nil {
+			return m, tea.Batch(playbackTickCmd(), crossfadeCmd)
+		}
 		return m, playbackTickCmd()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -578,6 +604,7 @@ func (m *Model) togglePlayPause() {
 		m.progressSince = time.Time{}
 		m.app.IsPlaying = false
 		m.app.StatusMessage = "Paused"
+		m.syncMediaControl()
 		return
 	}
 	if m.session != nil {
@@ -589,11 +616,55 @@ func (m *Model) togglePlayPause() {
 			m.progressActive = true
 		}
 		m.app.StatusMessage = "Playing"
+		m.syncMediaControl()
 		if m.progressActive {
 			return
 		}
 		return
 	}
+}
+
+func (m *Model) handleMediaControlCommand(command MediaControlCommand) tea.Cmd {
+	switch command.Kind {
+	case MediaControlPlay:
+		if !m.app.IsPlaying {
+			return m.playCurrentQueueTrackOrResume()
+		}
+	case MediaControlPause:
+		if m.app.IsPlaying {
+			m.togglePlayPause()
+		}
+	case MediaControlToggle:
+		if m.session != nil || m.app.IsPlaying {
+			m.togglePlayPause()
+			return nil
+		}
+		return m.playCurrentQueueTrackOrResume()
+	case MediaControlNext:
+		return m.handleNext()
+	case MediaControlPrevious:
+		return m.handlePrevious()
+	case MediaControlSetPosition:
+		return m.seekCurrentTrackTo(command.PositionMS)
+	}
+	return nil
+}
+
+func (m *Model) playCurrentQueueTrackOrResume() tea.Cmd {
+	if m.session != nil {
+		m.togglePlayPause()
+		return nil
+	}
+	if m.app.QueueIndex != nil && *m.app.QueueIndex >= 0 && *m.app.QueueIndex < len(m.app.QueueTracks) {
+		m.app.QueueState.Select(intPtr(*m.app.QueueIndex))
+		return m.startTrackPlayback(m.app.QueueTracks[*m.app.QueueIndex].ID)
+	}
+	if len(m.app.QueueTracks) > 0 {
+		m.app.QueueIndex = intPtr(0)
+		m.app.QueueState.Select(intPtr(0))
+		return m.startTrackPlayback(m.app.QueueTracks[0].ID)
+	}
+	return nil
 }
 
 func (m *Model) handleSpacebar() tea.Cmd {
@@ -878,6 +949,56 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+func (m Model) listenMediaControlCmd() tea.Cmd {
+	runtime, ok := m.runtime.(MediaControlRuntime)
+	if !ok {
+		return nil
+	}
+	return listenMediaControlCmd(runtime.MediaControlEvents())
+}
+
+func (m Model) syncMediaControl() {
+	runtime, ok := m.runtime.(MediaControlRuntime)
+	if !ok {
+		return
+	}
+	state := MediaControlState{
+		Playing:     m.app.IsPlaying,
+		Stopped:     !m.app.IsPlaying && m.session == nil,
+		Volume:      m.app.Volume,
+		CanNext:     m.canGoNext(),
+		CanPrevious: m.canGoPrevious(),
+		CanSeek:     m.app.NowPlaying != nil && m.currentQuality != deezer.AudioQualityFlac,
+		RepeatMode:  appRepeatMode(m.app.RepeatMode),
+	}
+	if now := m.app.NowPlaying; now != nil {
+		state.TrackID = now.ID
+		state.Title = now.Title
+		state.Artist = now.Artist
+		state.PositionMS = now.CurrentMS
+		state.DurationMS = now.TotalMS
+		if now.AlbumArtURL != nil {
+			state.AlbumArtURL = *now.AlbumArtURL
+		}
+	}
+	runtime.UpdateMediaControl(state)
+}
+
+func (m Model) canGoNext() bool {
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		return false
+	}
+	current := *m.app.QueueIndex
+	return current+1 < len(m.app.QueueTracks) || m.app.ShouldLoadMoreFlow() || m.app.RepeatMode == app.RepeatModeAll || m.app.RepeatMode == app.RepeatModeOne
+}
+
+func (m Model) canGoPrevious() bool {
+	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		return false
+	}
+	return *m.app.QueueIndex > 0 || m.app.RepeatMode == app.RepeatModeAll || m.app.RepeatMode == app.RepeatModeOne
+}
+
 func (m *Model) handleNext() tea.Cmd {
 	if m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
 		return nil
@@ -924,11 +1045,13 @@ func (m *Model) adjustVolume(delta int) {
 		m.session.SetVolume(float32(m.app.Volume) / 100)
 	}
 	m.app.StatusMessage = fmt.Sprintf("Volume: %d%%", m.app.Volume)
+	m.syncMediaControl()
 }
 
 func (m *Model) cycleRepeatMode() {
 	m.app.RepeatMode = nextRepeatMode(m.app.RepeatMode)
 	m.app.StatusMessage = fmt.Sprintf("Repeat: %s", repeatModeLabel(m.app.RepeatMode))
+	m.syncMediaControl()
 }
 
 func (m *Model) adjustSelectedSetting(direction int) {
@@ -993,6 +1116,7 @@ func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality dee
 	m.bufferingPercent = intPtr(0)
 	m.progressBaseMS = 0
 	m.progressSince = time.Time{}
+	m.app.AutoTransitionArmed = false
 	m.pauseRequested = false
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
@@ -1037,6 +1161,22 @@ func (m *Model) seekCurrentTrack(deltaMS int64) tea.Cmd {
 	}
 	m.app.StatusMessage = fmt.Sprintf("Seeking to %s", formatClock(seekMS))
 	return m.startTrackPlaybackAt(m.currentTrackID, m.currentQuality, seekMS, true)
+}
+
+func (m *Model) seekCurrentTrackTo(positionMS uint64) tea.Cmd {
+	if m.app.NowPlaying == nil || strings.TrimSpace(m.currentTrackID) == "" {
+		m.app.StatusMessage = "Nothing playing"
+		return nil
+	}
+	if m.currentQuality == deezer.AudioQualityFlac {
+		m.app.StatusMessage = "Seeking is not supported for FLAC playback"
+		return nil
+	}
+	if total := m.app.NowPlaying.TotalMS; total > 0 && positionMS >= total {
+		positionMS = total - 1
+	}
+	m.app.StatusMessage = fmt.Sprintf("Seeking to %s", formatClock(positionMS))
+	return m.startTrackPlaybackAt(m.currentTrackID, m.currentQuality, positionMS, true)
 }
 
 func (m *Model) switchCurrentQuality(direction int) tea.Cmd {
@@ -1118,6 +1258,62 @@ func (m *Model) stopCurrentSession() {
 		}
 	}
 	m.session.Stop()
+}
+
+func (m *Model) maybeStartCrossfadeTransition(currentMS, totalMS uint64) tea.Cmd {
+	if !m.app.Config.CrossfadeEnabled || m.app.Config.CrossfadeDurationMS == 0 {
+		return nil
+	}
+	if m.app.AutoTransitionArmed || m.session == nil || m.app.QueueIndex == nil || len(m.app.QueueTracks) == 0 {
+		return nil
+	}
+	if totalMS == 0 || currentMS >= totalMS {
+		return nil
+	}
+	remainingMS := totalMS - currentMS
+	if remainingMS > m.app.Config.CrossfadeDurationMS {
+		return nil
+	}
+
+	cmd := m.nextPlaybackCommandForAutoTransition()
+	if cmd == nil {
+		return nil
+	}
+	m.app.AutoTransitionArmed = true
+	return cmd
+}
+
+func (m *Model) nextPlaybackCommandForAutoTransition() tea.Cmd {
+	current := *m.app.QueueIndex
+	if current < 0 || current >= len(m.app.QueueTracks) {
+		return nil
+	}
+
+	if m.app.RepeatMode == app.RepeatModeOne {
+		m.app.QueueState.Select(intPtr(current))
+		return m.startTrackPlayback(m.app.QueueTracks[current].ID)
+	}
+
+	if current+1 < len(m.app.QueueTracks) {
+		nextIndex := current + 1
+		m.app.QueueIndex = intPtr(nextIndex)
+		m.app.QueueState.Select(intPtr(nextIndex))
+		return m.startTrackPlayback(m.app.QueueTracks[nextIndex].ID)
+	}
+
+	if m.app.ShouldLoadMoreFlow() {
+		m.app.FlowLoadingMore = true
+		m.app.StatusMessage = "Loading more Flow..."
+		return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, true)
+	}
+
+	if m.app.RepeatMode == app.RepeatModeAll {
+		m.app.QueueIndex = intPtr(0)
+		m.app.QueueState.Select(intPtr(0))
+		return m.startTrackPlayback(m.app.QueueTracks[0].ID)
+	}
+
+	return nil
 }
 
 func (m *Model) maybePrebufferNextTrack() tea.Cmd {
@@ -1599,6 +1795,19 @@ func waitPlaybackCmd(playID int, session PlaybackSession) tea.Cmd {
 	}
 	return func() tea.Msg {
 		return playbackFinishedMsg{playID: playID, err: session.Wait()}
+	}
+}
+
+func listenMediaControlCmd(events <-chan MediaControlCommand) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		command, ok := <-events
+		if !ok {
+			return nil
+		}
+		return mediaControlCommandMsg{command: command}
 	}
 }
 

@@ -1,5 +1,7 @@
 import AVFoundation
 import Foundation
+import AppKit
+import MediaPlayer
 
 final class PlayerDelegate: NSObject, AVAudioPlayerDelegate {
     var token: Int = 0
@@ -71,6 +73,113 @@ let delegate = PlayerDelegate()
 var currentPlayer: AVAudioPlayer?
 var currentToken: Int = 0
 var currentVolume: Float = 1.0
+var currentTrackID: String = ""
+var currentDurationMS: Int = 0
+var currentPositionMS: Int = 0
+var remoteCommandsRegistered = false
+
+func emitRemote(_ command: String) {
+    print("remote\t\(command)")
+    fflush(stdout)
+}
+
+func registerRemoteCommands() {
+    if remoteCommandsRegistered {
+        return
+    }
+    remoteCommandsRegistered = true
+
+    let center = MPRemoteCommandCenter.shared()
+    center.playCommand.addTarget { _ in
+        emitRemote("play")
+        return .success
+    }
+    center.pauseCommand.addTarget { _ in
+        emitRemote("pause")
+        return .success
+    }
+    center.togglePlayPauseCommand.addTarget { _ in
+        emitRemote("toggle")
+        return .success
+    }
+    center.nextTrackCommand.addTarget { _ in
+        emitRemote("next")
+        return .success
+    }
+    center.previousTrackCommand.addTarget { _ in
+        emitRemote("previous")
+        return .success
+    }
+    center.changePlaybackPositionCommand.addTarget { event in
+        guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+            return .commandFailed
+        }
+        let positionMS = max(0, Int(positionEvent.positionTime * 1000))
+        emitRemote("setPosition\t\(positionMS)")
+        return .success
+    }
+}
+
+func updateNowPlaying(trackID: String, title: String, artist: String, durationMS: Int, positionMS: Int, artURL: String) {
+    currentTrackID = trackID
+    currentDurationMS = max(0, durationMS)
+    currentPositionMS = max(0, positionMS)
+
+    let info: [String: Any] = [
+        MPMediaItemPropertyTitle: title,
+        MPMediaItemPropertyArtist: artist,
+        MPMediaItemPropertyPlaybackDuration: TimeInterval(currentDurationMS) / 1000.0,
+        MPNowPlayingInfoPropertyElapsedPlaybackTime: TimeInterval(currentPositionMS) / 1000.0,
+        MPNowPlayingInfoPropertyPlaybackRate: currentPlayer?.isPlaying == true ? 1.0 : 0.0,
+    ]
+
+    if let url = URL(string: artURL), !artURL.isEmpty {
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data, let image = NSImage(data: data) {
+                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                DispatchQueue.main.async {
+                    var current = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
+                    current[MPMediaItemPropertyArtwork] = artwork
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo = current
+                }
+            }
+        }.resume()
+    }
+
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+}
+
+func updatePlaybackState(_ state: String) {
+    var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+    switch state {
+    case "playing":
+        MPNowPlayingInfoCenter.default().playbackState = .playing
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+    case "paused":
+        MPNowPlayingInfoCenter.default().playbackState = .paused
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+    default:
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+    }
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+}
+
+func updatePosition(positionMS: Int, durationMS: Int) {
+    currentPositionMS = max(0, positionMS)
+    currentDurationMS = max(0, durationMS)
+    var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = TimeInterval(currentPositionMS) / 1000.0
+    info[MPMediaItemPropertyPlaybackDuration] = TimeInterval(currentDurationMS) / 1000.0
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+}
+
+func updateCapabilities(canNext: Bool, canPrevious: Bool, canSeek: Bool) {
+    let center = MPRemoteCommandCenter.shared()
+    center.nextTrackCommand.isEnabled = canNext
+    center.previousTrackCommand.isEnabled = canPrevious
+    center.changePlaybackPositionCommand.isEnabled = canSeek
+}
 
 func stopCurrent(report: Bool) {
     if report, currentToken != 0 {
@@ -109,6 +218,9 @@ func playTrack(token: Int, volume: Float, seekMS: Int, path: String) {
 }
 
 DispatchQueue.global(qos: .userInitiated).async {
+    DispatchQueue.main.async {
+        registerRemoteCommands()
+    }
     while let raw = readLine() {
         let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if line.isEmpty {
@@ -135,6 +247,22 @@ DispatchQueue.global(qos: .userInitiated).async {
                 if parts.count >= 2, let value = Float(parts[1]), let player = currentPlayer {
                     currentVolume = max(0, min(1, value))
                     player.setVolume(currentVolume, fadeDuration: resumeFadeSeconds)
+                }
+            case "nowplaying":
+                if parts.count >= 7, let durationMS = Int(parts[4]), let positionMS = Int(parts[5]) {
+                    updateNowPlaying(trackID: parts[1], title: parts[2], artist: parts[3], durationMS: durationMS, positionMS: positionMS, artURL: parts[6])
+                }
+            case "state":
+                if parts.count >= 2 {
+                    updatePlaybackState(parts[1])
+                }
+            case "position":
+                if parts.count >= 3, let positionMS = Int(parts[1]), let durationMS = Int(parts[2]) {
+                    updatePosition(positionMS: positionMS, durationMS: durationMS)
+                }
+            case "capabilities":
+                if parts.count >= 4 {
+                    updateCapabilities(canNext: parts[1] == "1", canPrevious: parts[2] == "1", canSeek: parts[3] == "1")
                 }
             case "quit":
                 stopCurrent(report: false)

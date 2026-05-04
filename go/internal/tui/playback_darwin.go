@@ -60,6 +60,21 @@ func (r *defaultPlayerRuntime) Prebuffer(trackID string, quality deezer.AudioQua
 	r.prebuffer.Prebuffer(context.Background(), r.client, trackID, quality)
 }
 
+func (r *defaultPlayerRuntime) MediaControlEvents() <-chan MediaControlCommand {
+	if r.manager == nil {
+		return nil
+	}
+	r.manager.startAsync()
+	return r.manager.mediaEvents
+}
+
+func (r *defaultPlayerRuntime) UpdateMediaControl(state MediaControlState) {
+	if r.manager == nil {
+		return
+	}
+	r.manager.updateMediaControl(state)
+}
+
 type darwinPlaybackSession struct {
 	mu       sync.Mutex
 	file     string
@@ -220,12 +235,13 @@ func (s *darwinPlaybackSession) SetVolume(v float32) {
 }
 
 type darwinHelperManager struct {
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	waitErrCh chan error
-	nextToken int
-	current   *darwinPlayHandle
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	waitErrCh   chan error
+	nextToken   int
+	current     *darwinPlayHandle
+	mediaEvents chan MediaControlCommand
 }
 
 type darwinPlayHandle struct {
@@ -235,8 +251,17 @@ type darwinPlayHandle struct {
 
 func newDarwinHelperManager() *darwinHelperManager {
 	return &darwinHelperManager{
-		nextToken: 1,
+		nextToken:   1,
+		mediaEvents: make(chan MediaControlCommand, 16),
 	}
+}
+
+func (m *darwinHelperManager) startAsync() {
+	go func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		_ = m.ensureStartedLocked()
+	}()
 }
 
 func (m *darwinHelperManager) play(path string, volume float32, seekMS uint64) (int, <-chan error, error) {
@@ -281,6 +306,50 @@ func (m *darwinHelperManager) stop(token int) error {
 
 func (m *darwinHelperManager) setVolume(token int, volume float32) error {
 	return m.simpleCommand(token, "volume\t"+strconv.FormatFloat(float64(volume), 'f', 4, 32))
+}
+
+func (m *darwinHelperManager) updateMediaControl(state MediaControlState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.ensureStartedLocked(); err != nil {
+		return
+	}
+
+	_ = m.sendLocked(strings.Join([]string{
+		"nowplaying",
+		sanitizeHelperField(state.TrackID),
+		sanitizeHelperField(state.Title),
+		sanitizeHelperField(state.Artist),
+		strconv.FormatUint(state.DurationMS, 10),
+		strconv.FormatUint(state.PositionMS, 10),
+		sanitizeHelperField(state.AlbumArtURL),
+	}, "\t"))
+
+	stateName := "stopped"
+	if state.Playing {
+		stateName = "playing"
+	} else if !state.Stopped {
+		stateName = "paused"
+	}
+	_ = m.sendLocked("state\t" + stateName)
+	_ = m.sendLocked(fmt.Sprintf("position\t%d\t%d", state.PositionMS, state.DurationMS))
+	_ = m.sendLocked(fmt.Sprintf("capabilities\t%s\t%s\t%s",
+		helperBool(state.CanNext),
+		helperBool(state.CanPrevious),
+		helperBool(state.CanSeek),
+	))
+}
+
+func helperBool(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+func sanitizeHelperField(value string) string {
+	replacer := strings.NewReplacer("\t", " ", "\n", " ", "\r", " ")
+	return replacer.Replace(value)
 }
 
 func (m *darwinHelperManager) simpleCommand(token int, cmd string) error {
@@ -350,6 +419,8 @@ func (m *darwinHelperManager) readLoop(stdout io.Reader) {
 			continue
 		}
 		switch parts[0] {
+		case "remote":
+			m.emitRemoteCommand(parts)
 		case "finished":
 			token, _ := strconv.Atoi(parts[1])
 			m.finishToken(token, nil)
@@ -367,6 +438,36 @@ func (m *darwinHelperManager) readLoop(stdout io.Reader) {
 	}
 	if err := scanner.Err(); err != nil {
 		m.finishCurrent(err)
+	}
+}
+
+func (m *darwinHelperManager) emitRemoteCommand(parts []string) {
+	if len(parts) < 2 {
+		return
+	}
+	command := MediaControlCommand{}
+	switch parts[1] {
+	case "play":
+		command.Kind = MediaControlPlay
+	case "pause":
+		command.Kind = MediaControlPause
+	case "toggle":
+		command.Kind = MediaControlToggle
+	case "next":
+		command.Kind = MediaControlNext
+	case "previous":
+		command.Kind = MediaControlPrevious
+	case "setPosition":
+		command.Kind = MediaControlSetPosition
+		if len(parts) > 2 {
+			command.PositionMS, _ = strconv.ParseUint(parts[2], 10, 64)
+		}
+	default:
+		return
+	}
+	select {
+	case m.mediaEvents <- command:
+	default:
 	}
 }
 
