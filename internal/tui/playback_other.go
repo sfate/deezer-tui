@@ -5,8 +5,8 @@ package tui
 import (
 	"context"
 
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 type defaultPlayerRuntime struct {

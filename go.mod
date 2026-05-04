@@ -1,4 +1,4 @@
-module deezer-tui-go
+module deezer-tui
 
 go 1.25.9
 

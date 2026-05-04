@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"deezer-tui-go/internal/deezer"
+	"deezer-tui/internal/deezer"
 	"github.com/faiface/beep"
 	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/flac"

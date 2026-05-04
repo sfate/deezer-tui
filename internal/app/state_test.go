@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"deezer-tui-go/internal/config"
+	"deezer-tui/internal/config"
 )
 
 func testApp() *App {

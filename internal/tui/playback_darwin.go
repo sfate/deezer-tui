@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 //go:embed mac_player_helper.swift
@@ -745,7 +745,7 @@ func ensureMacPlayerHelper() (string, error) {
 			macHelperErr = err
 			return
 		}
-		dir := filepath.Join(cacheDir, "deezer-tui-go")
+		dir := filepath.Join(cacheDir, "deezer-tui")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			macHelperErr = err
 			return

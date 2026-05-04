@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"deezer-tui-go/internal/deezer"
+	"deezer-tui/internal/deezer"
 )
 
 const (

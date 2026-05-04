@@ -11,10 +11,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	cellansi "github.com/charmbracelet/x/ansi"
 
-	"deezer-tui-go/internal/app"
-	"deezer-tui-go/internal/config"
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/app"
+	"deezer-tui/internal/config"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 var (
@@ -512,16 +512,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
-		view := tea.NewView("Loading deezer-tui-go...")
+		view := tea.NewView("Loading deezer-tui...")
 		view.AltScreen = true
-		view.WindowTitle = "deezer-tui-go"
+		view.WindowTitle = "deezer-tui"
 		return view
 	}
 
 	if !m.ready {
 		view := tea.NewView(fillBackground(m.renderLoadingScreen(), m.width))
 		view.AltScreen = true
-		view.WindowTitle = "deezer-tui-go"
+		view.WindowTitle = "deezer-tui"
 		return view
 	}
 
@@ -550,7 +550,7 @@ func (m Model) View() tea.View {
 	content = fillBackground(content, m.width)
 	view := tea.NewView(content)
 	view.AltScreen = true
-	view.WindowTitle = "deezer-tui-go"
+	view.WindowTitle = "deezer-tui"
 	return view
 }
 

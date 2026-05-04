@@ -12,10 +12,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"deezer-tui-go/internal/app"
-	"deezer-tui-go/internal/config"
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/app"
+	"deezer-tui/internal/config"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 type fakeLoader struct {
@@ -135,7 +135,7 @@ func TestViewUsesAltScreen(t *testing.T) {
 	if !view.AltScreen {
 		t.Fatal("expected alt screen to be enabled")
 	}
-	if view.WindowTitle != "deezer-tui-go" {
+	if view.WindowTitle != "deezer-tui" {
 		t.Fatalf("unexpected window title %q", view.WindowTitle)
 	}
 }

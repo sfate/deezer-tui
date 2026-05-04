@@ -2,4 +2,4 @@
 # ignore the target directory
 target/
 target/debug/
-deezer-tui
+/deezer-tui

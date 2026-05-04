@@ -3,8 +3,8 @@ package tui
 import (
 	"time"
 
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 type PlaybackSession interface {

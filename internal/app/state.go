@@ -3,7 +3,7 @@ package app
 import (
 	"fmt"
 
-	"deezer-tui-go/internal/config"
+	"deezer-tui/internal/config"
 )
 
 type CommandKind int

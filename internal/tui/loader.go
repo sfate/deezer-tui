@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"deezer-tui-go/internal/app"
-	"deezer-tui-go/internal/config"
-	"deezer-tui-go/internal/deezer"
-	"deezer-tui-go/internal/player"
+	"deezer-tui/internal/app"
+	"deezer-tui/internal/config"
+	"deezer-tui/internal/deezer"
+	"deezer-tui/internal/player"
 )
 
 type BootstrapData struct {
