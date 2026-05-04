@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,6 +63,13 @@ type playbackStartedMsg struct {
 	session PlaybackSession
 }
 
+type playbackStartFailedMsg struct {
+	playID  int
+	trackID string
+	quality deezer.AudioQuality
+	err     error
+}
+
 type playbackTrackChangedMsg struct {
 	playID    int
 	meta      deezer.TrackMetadata
@@ -118,6 +126,10 @@ type Model struct {
 	height           int
 	nextPlaybackID   int
 	currentPlayID    int
+	currentTrackID   string
+	currentQuality   deezer.AudioQuality
+	playbackRetries  int
+	favoritesSortAsc bool
 	ready            bool
 	loadingFrame     int
 }
@@ -281,6 +293,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			waitPlaybackCmd(msg.playID, msg.session),
 			listenPlaybackEventCmd(m.playbackEvents),
 		)
+	case playbackStartFailedMsg:
+		if msg.playID != m.nextPlaybackID {
+			return m, nil
+		}
+		return m, m.retryPlaybackAfterError(msg.err)
 	case bufferingProgressMsg:
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
 			return m, listenPlaybackEventCmd(m.playbackEvents)
@@ -356,8 +373,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.playID != m.currentPlayID && msg.playID != m.nextPlaybackID {
 			return m, listenPlaybackEventCmd(m.playbackEvents)
 		}
-		m.app.StatusMessage = fmt.Sprintf("Playback runtime error: %v", msg.err)
-		return m, listenPlaybackEventCmd(m.playbackEvents)
+		return m, tea.Batch(m.retryPlaybackAfterError(msg.err), listenPlaybackEventCmd(m.playbackEvents))
 	case playbackFinishedMsg:
 		if msg.playID != m.currentPlayID {
 			return m, nil
@@ -367,9 +383,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bufferingPercent = nil
 		m.progressSince = time.Time{}
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			m.app.IsPlaying = false
-			m.app.StatusMessage = fmt.Sprintf("Playback error: %v", msg.err)
-			return m, nil
+			return m, m.retryPlaybackAfterError(msg.err)
 		}
 		if errors.Is(msg.err, context.Canceled) {
 			return m, nil
@@ -443,6 +457,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.adjustVolume(5)
 		case "-":
 			m.adjustVolume(-5)
+		case "s":
+			if m.toggleFavoritesSort() {
+				return m, nil
+			}
 		case "/":
 			m.app.IsSearching = true
 			m.app.SearchQuery = ""
@@ -754,6 +772,9 @@ func (m *Model) handleSearchResultEnter() tea.Cmd {
 func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.CurrentPlaylistID = stringPtr(id)
 	m.app.CurrentTracks = append([]app.Track(nil), tracks...)
+	if id == "__favorites__" {
+		m.applyFavoritesSort()
+	}
 	m.app.MainState.Select(intPtr(0))
 	m.app.SearchPlaylists = nil
 	m.app.SearchArtists = nil
@@ -766,6 +787,42 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.FlowLoadingMore = false
 	m.app.FlowNextIndex = 0
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
+}
+
+func (m *Model) toggleFavoritesSort() bool {
+	if m.app.CurrentPlaylistID == nil || *m.app.CurrentPlaylistID != "__favorites__" || len(m.app.CurrentTracks) == 0 {
+		return false
+	}
+	m.favoritesSortAsc = !m.favoritesSortAsc
+	m.applyFavoritesSort()
+	m.app.MainState.Select(intPtr(0))
+	m.app.StatusMessage = fmt.Sprintf("Favorites sorted by added date %s", ternary(m.favoritesSortAsc, "ascending", "descending"))
+	return true
+}
+
+func (m *Model) applyFavoritesSort() {
+	queueOwned := m.currentCollectionOwnsQueue()
+	sort.SliceStable(m.app.CurrentTracks, func(i, j int) bool {
+		left := m.app.CurrentTracks[i].AddedAtMS
+		right := m.app.CurrentTracks[j].AddedAtMS
+		if left == nil && right == nil {
+			return false
+		}
+		if left == nil {
+			return false
+		}
+		if right == nil {
+			return true
+		}
+		if m.favoritesSortAsc {
+			return *left < *right
+		}
+		return *left > *right
+	})
+	if queueOwned {
+		m.app.QueueTracks = append([]app.Track(nil), m.app.CurrentTracks...)
+		m.app.Queue = formatQueue(m.app.QueueTracks)
+	}
 }
 
 func (m Model) currentCollectionOwnsQueue() bool {
@@ -891,6 +948,10 @@ func (m *Model) persistConfig() {
 }
 
 func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
+	return m.startTrackPlaybackWithQuality(trackID, qualityFromConfig(m.app.Config.DefaultQuality), true)
+}
+
+func (m *Model) startTrackPlaybackWithQuality(trackID string, quality deezer.AudioQuality, resetRetries bool) tea.Cmd {
 	if strings.TrimSpace(trackID) == "" {
 		return nil
 	}
@@ -902,6 +963,7 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 		m.stopCurrentSession()
 		m.session = nil
 	}
+	m.currentPlayID = 0
 	m.progressActive = false
 	m.bufferingPercent = intPtr(0)
 	m.progressBaseMS = 0
@@ -910,14 +972,55 @@ func (m *Model) startTrackPlayback(trackID string) tea.Cmd {
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
 	m.artworkURL = ""
+	if resetRetries {
+		m.playbackRetries = 0
+	}
+	m.currentTrackID = trackID
+	m.currentQuality = quality
 	m.nextPlaybackID++
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
 	return tea.Batch(
-		startPlaybackCmdWithEvents(playID, trackID, m.runtime, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents),
+		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, m.playbackEvents),
 		m.maybeLoadMoreFlowForTail(),
 	)
+}
+
+func (m *Model) retryPlaybackAfterError(err error) tea.Cmd {
+	trackID := strings.TrimSpace(m.currentTrackID)
+	if trackID == "" {
+		m.app.IsPlaying = false
+		m.app.StatusMessage = fmt.Sprintf("Playback error: %v", err)
+		return nil
+	}
+
+	if m.playbackRetries == 0 {
+		m.playbackRetries++
+		m.app.StatusMessage = fmt.Sprintf("Playback error, reloading track: %v", err)
+		return m.startTrackPlaybackWithQuality(trackID, m.currentQuality, false)
+	}
+
+	if lower, ok := lowerPlaybackQuality(m.currentQuality); ok {
+		m.playbackRetries++
+		m.app.StatusMessage = fmt.Sprintf("Playback error, retrying at %s: %v", qualityLabel(configQualityFromDeezer(lower)), err)
+		return m.startTrackPlaybackWithQuality(trackID, lower, false)
+	}
+
+	m.app.IsPlaying = false
+	m.app.StatusMessage = fmt.Sprintf("Playback error: %v", err)
+	return nil
+}
+
+func lowerPlaybackQuality(current deezer.AudioQuality) (deezer.AudioQuality, bool) {
+	switch current {
+	case deezer.AudioQualityFlac:
+		return deezer.AudioQuality320, true
+	case deezer.AudioQuality320:
+		return deezer.AudioQuality128, true
+	default:
+		return "", false
+	}
 }
 
 func (m *Model) stopCurrentSession() {
@@ -1067,6 +1170,9 @@ func (m Model) renderMain(width, height int) string {
 		} else {
 			playAll := trackRow(" Play Collection", selected == 0, gruvboxYellow)
 			lines = append(lines, playAll)
+			if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
+				lines = append(lines, paint(fmt.Sprintf(" Sort: added date %s", ternary(m.favoritesSortAsc, "asc", "desc")), gruvboxFg4, ""))
+			}
 			lines = append(lines, "")
 			lines = append(lines, tableHeader(" #  Title                               Artist", gruvboxOrange))
 			lines = append(lines, separatorLine(58, gruvboxBg3))
@@ -1134,7 +1240,11 @@ func (m Model) renderSearchBar() string {
 }
 
 func (m Model) renderPlaybar() string {
-	left := paint(" space play/pause | n/p next prev | +/- volume ", gruvboxFg1, "")
+	controls := " space play/pause | n/p next prev | +/- volume "
+	if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
+		controls = " space play/pause | n/p next prev | s sort | +/- volume "
+	}
+	left := paint(controls, gruvboxFg1, "")
 	stateColor := gruvboxFg4
 	if m.app.IsPlaying {
 		stateColor = gruvboxOrange
@@ -1368,7 +1478,7 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 		}
 		session, err := runtime.Start(trackID, quality, handler)
 		if err != nil {
-			return loadFailedMsg{message: fmt.Sprintf("Playback start error: %v", err)}
+			return playbackStartFailedMsg{playID: playID, trackID: trackID, quality: quality, err: err}
 		}
 		return playbackStartedMsg{playID: playID, session: session}
 	}

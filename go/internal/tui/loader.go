@@ -102,9 +102,10 @@ func mapTracks(in []deezer.Track) []app.Track {
 	out := make([]app.Track, 0, len(in))
 	for _, track := range in {
 		out = append(out, app.Track{
-			ID:     track.ID,
-			Title:  track.Title,
-			Artist: track.Artist,
+			ID:        track.ID,
+			Title:     track.Title,
+			Artist:    track.Artist,
+			AddedAtMS: track.AddedAtMS,
 		})
 	}
 	return out

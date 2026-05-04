@@ -63,11 +63,15 @@ type fakePlaybackRuntime struct {
 	qualities   []deezer.AudioQuality
 	prebuffered []string
 	session     *fakePlaybackSession
+	startErr    error
 }
 
 func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, _ player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
 	f.qualities = append(f.qualities, quality)
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
 	f.session = &fakePlaybackSession{}
 	return f.session, nil
 }
@@ -94,6 +98,19 @@ func (f *fakePlaybackSession) FadeOutStop(d time.Duration) {
 	if f.faded != nil {
 		f.faded <- d
 	}
+}
+
+func firstBatchMessage(cmd tea.Cmd) tea.Msg {
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child == nil {
+				continue
+			}
+			return child()
+		}
+	}
+	return msg
 }
 
 func TestViewUsesAltScreen(t *testing.T) {
@@ -144,6 +161,30 @@ func TestTruncatePreservesUTF8(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncate returned invalid utf8: %q", got)
+	}
+}
+
+func TestFavoritesDefaultToNewestAddedFirstAndToggleSort(t *testing.T) {
+	old := int64(1000)
+	newer := int64(3000)
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.ready = true
+	model.loadCollection("__favorites__", "Favorites", []app.Track{
+		{ID: "old", Title: "Old", Artist: "A", AddedAtMS: &old},
+		{ID: "new", Title: "New", Artist: "B", AddedAtMS: &newer},
+	})
+
+	if got := model.app.CurrentTracks[0].ID; got != "new" {
+		t.Fatalf("expected newest favorite first by default, got %q", got)
+	}
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "s"}))
+	updated := nextModel.(Model)
+	if got := updated.app.CurrentTracks[0].ID; got != "old" {
+		t.Fatalf("expected oldest favorite first after sort toggle, got %q", got)
+	}
+	if !strings.Contains(updated.app.StatusMessage, "ascending") {
+		t.Fatalf("expected ascending sort status, got %q", updated.app.StatusMessage)
 	}
 }
 
@@ -945,14 +986,77 @@ func TestPlaybackProgressClearsPrebufferAtQueueEnd(t *testing.T) {
 }
 
 func TestPlaybackErrorStopsPlayback(t *testing.T) {
-	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
 	model.currentPlayID = 1
+	model.currentTrackID = "track-1"
+	model.currentQuality = deezer.AudioQuality320
 	model.app.IsPlaying = true
 
-	nextModel, _ := model.Update(playbackFinishedMsg{playID: 1, err: errors.New("boom")})
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 1, err: errors.New("boom")})
 	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected retry command after playback error")
+	}
+	if !updated.app.IsPlaying {
+		t.Fatal("expected playback to remain active while retrying")
+	}
+	if updated.playbackRetries != 1 {
+		t.Fatalf("expected one retry attempt, got %d", updated.playbackRetries)
+	}
+
+	msg := firstBatchMessage(cmd)
+	nextModel, _ = updated.Update(msg)
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "track-1" {
+		t.Fatalf("expected same track to be reloaded, got %#v", runtime.started)
+	}
+	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQuality320 {
+		t.Fatalf("expected first retry to keep quality, got %#v", runtime.qualities)
+	}
+}
+
+func TestPlaybackRetryReducesQualityAfterReloadFails(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.currentPlayID = 2
+	model.currentTrackID = "track-2"
+	model.currentQuality = deezer.AudioQualityFlac
+	model.playbackRetries = 1
+	model.app.IsPlaying = true
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 2, err: errors.New("again")})
+	updated := nextModel.(Model)
+	if cmd == nil {
+		t.Fatal("expected quality downgrade retry command")
+	}
+
+	msg := firstBatchMessage(cmd)
+	nextModel, _ = updated.Update(msg)
+	updated = nextModel.(Model)
+	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQuality320 {
+		t.Fatalf("expected retry to downgrade to 320 kbps, got %#v", runtime.qualities)
+	}
+	if updated.currentQuality != deezer.AudioQuality320 {
+		t.Fatalf("expected model quality to track downgrade, got %s", updated.currentQuality)
+	}
+}
+
+func TestPlaybackRetryStopsAtLowestQuality(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, &fakePlaybackRuntime{})
+	model.currentPlayID = 3
+	model.currentTrackID = "track-3"
+	model.currentQuality = deezer.AudioQuality128
+	model.playbackRetries = 1
+	model.app.IsPlaying = true
+
+	nextModel, cmd := model.Update(playbackFinishedMsg{playID: 3, err: errors.New("nope")})
+	updated := nextModel.(Model)
+	if cmd != nil {
+		t.Fatal("did not expect retry below 128 kbps")
+	}
 	if updated.app.IsPlaying {
-		t.Fatal("expected playback error to stop playback")
+		t.Fatal("expected playback to stop at lowest quality")
 	}
 }
 

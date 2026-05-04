@@ -90,9 +90,10 @@ func (s *ListState) Selected() *int {
 }
 
 type Track struct {
-	ID     string
-	Title  string
-	Artist string
+	ID        string
+	Title     string
+	Artist    string
+	AddedAtMS *int64
 }
 
 type Playlist struct {

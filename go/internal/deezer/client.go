@@ -56,9 +56,10 @@ type Client struct {
 }
 
 type Track struct {
-	ID     string
-	Title  string
-	Artist string
+	ID        string
+	Title     string
+	Artist    string
+	AddedAtMS *int64
 }
 
 type TrackMetadata struct {
@@ -955,7 +956,7 @@ func parseTracksFromCandidates(root map[string]any, paths ...[]string) []Track {
 				"Unknown artist",
 			)
 			if id != "" {
-				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist})
+				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, AddedAtMS: parseTrackAddedAtMS(item)})
 			}
 		}
 		if len(tracks) > 0 {
@@ -963,6 +964,55 @@ func parseTracksFromCandidates(root map[string]any, paths ...[]string) []Track {
 		}
 	}
 	return nil
+}
+
+func parseTrackAddedAtMS(item map[string]any) *int64 {
+	for _, key := range []string{"DATE_ADD", "DATE_FAVORITE", "ADD_DATE", "TIME_ADD", "TIMESTAMP"} {
+		raw, ok := item[key]
+		if !ok {
+			continue
+		}
+		if ms, ok := parseTimestampMS(raw); ok {
+			return &ms
+		}
+	}
+	return nil
+}
+
+func parseTimestampMS(raw any) (int64, bool) {
+	switch value := raw.(type) {
+	case float64:
+		if value <= 0 {
+			return 0, false
+		}
+		return normalizeUnixTimestampMS(int64(value)), true
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0, false
+		}
+		if n, err := strconv.ParseInt(value, 10, 64); err == nil && n > 0 {
+			return normalizeUnixTimestampMS(n), true
+		}
+		for _, layout := range []string{
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+		} {
+			parsed, err := time.Parse(layout, value)
+			if err == nil {
+				return parsed.UnixMilli(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func normalizeUnixTimestampMS(value int64) int64 {
+	if value < 10_000_000_000 {
+		return value * 1000
+	}
+	return value
 }
 
 func getMap(m map[string]any, key string) map[string]any {
