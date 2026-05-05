@@ -11,7 +11,7 @@ on:
       - reopened
 
 jobs:
-  go:
+  test-and-lint:
     runs-on: ubuntu-latest
 
     steps:
