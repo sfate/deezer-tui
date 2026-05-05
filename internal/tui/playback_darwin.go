@@ -689,17 +689,6 @@ func (s *darwinPrebufferStore) runJob(ctx context.Context, client *deezer.Client
 	s.startPendingLocked(context.Background(), client)
 }
 
-func (s *darwinPrebufferStore) clearLocked() {
-	s.cancelPendingLocked()
-	s.order = nil
-	for key, prepared := range s.current {
-		if prepared.File != "" {
-			_ = os.Remove(prepared.File)
-		}
-		delete(s.current, key)
-	}
-}
-
 func (s *darwinPrebufferStore) cancelPendingLocked() {
 	for key, job := range s.inflight {
 		job.cancel()

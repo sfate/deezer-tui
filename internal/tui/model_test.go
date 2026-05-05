@@ -1555,8 +1555,7 @@ func TestHandleNextWrapsAtQueueEndWhenRepeatAllEnabled(t *testing.T) {
 	if playbackCmd == nil {
 		t.Fatal("expected playback command after scheduled repeat-all next")
 	}
-	nextModel, _ = updated.Update(playbackCmd())
-	updated = nextModel.(Model)
+	_, _ = updated.Update(playbackCmd())
 	if len(runtime.started) != 1 || runtime.started[0] != "1" {
 		t.Fatalf("expected first track to start, got %#v", runtime.started)
 	}
