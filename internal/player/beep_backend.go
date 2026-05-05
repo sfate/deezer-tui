@@ -1,6 +1,7 @@
 package player
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -109,7 +110,7 @@ func (c *beepController) Resume() {
 }
 
 func (c *beepController) Stop() {
-	c.stopWithoutCallback()
+	c.stop(context.Canceled)
 }
 
 func (c *beepController) SetVolume(v float32) {
@@ -125,6 +126,10 @@ func (c *beepController) SetVolume(v float32) {
 }
 
 func (c *beepController) stopWithoutCallback() {
+	c.stop(nil)
+}
+
+func (c *beepController) stop(err error) {
 	if !c.finished.CompareAndSwap(false, true) {
 		return
 	}
@@ -137,6 +142,9 @@ func (c *beepController) stopWithoutCallback() {
 
 	if c.closer != nil {
 		_ = c.closer.Close()
+	}
+	if err != nil && c.onFinished != nil {
+		c.onFinished(err)
 	}
 }
 

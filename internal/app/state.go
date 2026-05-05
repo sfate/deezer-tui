@@ -226,7 +226,7 @@ func (a *App) HandleDown() {
 			max := 0
 			switch a.SearchCategory {
 			case SearchCategoryTracks:
-				max = len(a.CurrentTracks)
+				max = max0(len(a.CurrentTracks) - 1)
 			case SearchCategoryPlaylists:
 				max = max0(len(a.SearchPlaylists) - 1)
 			case SearchCategoryArtists:

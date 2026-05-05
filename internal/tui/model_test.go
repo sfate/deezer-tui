@@ -1532,6 +1532,70 @@ func TestPlaybackProgressPrebuffersNextQueuedTrack(t *testing.T) {
 	}
 }
 
+func TestHandleNextWrapsAtQueueEndWhenRepeatAllEnabled(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
+	model.app.QueueTracks = []app.Track{
+		{ID: "1", Title: "One", Artist: "A"},
+		{ID: "2", Title: "Two", Artist: "B"},
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(1)
+	model.app.RepeatMode = app.RepeatModeAll
+
+	cmd := model.handleNext()
+	if cmd == nil {
+		t.Fatal("expected repeat-all next command")
+	}
+	if model.app.QueueIndex == nil || *model.app.QueueIndex != 0 {
+		t.Fatalf("expected queue index to wrap to 0, got %#v", model.app.QueueIndex)
+	}
+	nextModel, playbackCmd := model.Update(cmd())
+	updated := nextModel.(Model)
+	if playbackCmd == nil {
+		t.Fatal("expected playback command after scheduled repeat-all next")
+	}
+	nextModel, _ = updated.Update(playbackCmd())
+	updated = nextModel.(Model)
+	if len(runtime.started) != 1 || runtime.started[0] != "1" {
+		t.Fatalf("expected first track to start, got %#v", runtime.started)
+	}
+}
+
+func TestLoadCollectionKeepsActiveFlowQueueState(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.ready = true
+	model.app.IsFlowQueue = true
+	model.app.FlowNextIndex = 12
+	model.app.QueueTracks = []app.Track{{ID: "1", Title: "One", Artist: "A"}}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+
+	model.loadCollection("__home__", "Home", []app.Track{{ID: "2", Title: "Two", Artist: "B"}})
+
+	if !model.app.IsFlowQueue {
+		t.Fatal("expected active Flow queue state to be preserved while browsing another collection")
+	}
+	if model.app.FlowNextIndex != 12 {
+		t.Fatalf("expected FlowNextIndex to be preserved, got %d", model.app.FlowNextIndex)
+	}
+}
+
+func TestSearchBackspaceRemovesWholeRune(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.IsSearching = true
+	model.app.SearchQuery = "Beyoncé"
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	updated := nextModel.(Model)
+	if updated.app.SearchQuery != "Beyonc" {
+		t.Fatalf("expected whole rune removal, got %q", updated.app.SearchQuery)
+	}
+	if !utf8.ValidString(updated.app.SearchQuery) {
+		t.Fatal("expected search query to remain valid UTF-8")
+	}
+}
+
 func TestPrebufferReadyStatusSurvivesWindowShift(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)

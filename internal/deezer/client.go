@@ -52,6 +52,7 @@ type Client struct {
 	gatewayURL        string
 	mediaURL          string
 	flowAPIBaseURL    string
+	userAgent         string
 	debugDumpsEnabled bool
 }
 
@@ -135,6 +136,7 @@ func NewClient(arl string, opts Options) (*Client, error) {
 		gatewayURL:        opts.GatewayURL,
 		mediaURL:          opts.MediaURL,
 		flowAPIBaseURL:    strings.TrimRight(opts.FlowAPIBaseURL, "/"),
+		userAgent:         opts.UserAgent,
 		debugDumpsEnabled: opts.DebugDumpsEnabled,
 	}
 
@@ -829,7 +831,7 @@ func (c *Client) seedCookies() error {
 }
 
 func (c *Client) applyHeaders(req *http.Request, authenticated bool) {
-	req.Header.Set("User-Agent", defaultUserAgent)
+	req.Header.Set("User-Agent", c.userAgent)
 	cookie := "arl=" + c.arl
 	if authenticated && c.sessionID != "" {
 		cookie += "; sid=" + c.sessionID

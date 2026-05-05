@@ -59,6 +59,30 @@ func TestFetchAPITokenBootstrapsSessionState(t *testing.T) {
 	}
 }
 
+func TestFetchAPITokenUsesCustomUserAgent(t *testing.T) {
+	const userAgent = "deezer-tui-test-agent"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != userAgent {
+			t.Fatalf("expected custom user agent %q, got %q", userAgent, got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": map[string]any{"checkForm": "api-token"}})
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-arl", Options{
+		GatewayURL:     server.URL,
+		MediaURL:       server.URL,
+		FlowAPIBaseURL: server.URL,
+		UserAgent:      userAgent,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if _, err := client.FetchAPIToken(context.Background()); err != nil {
+		t.Fatalf("fetch api token: %v", err)
+	}
+}
+
 func TestFetchFlowTracksUsesAuthenticatedCookiesAndPagination(t *testing.T) {
 	client, err := NewClient("test-arl", Options{})
 	if err != nil {

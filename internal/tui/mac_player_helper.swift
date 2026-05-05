@@ -134,10 +134,14 @@ func updateNowPlaying(trackID: String, title: String, artist: String, durationMS
     ]
 
     if let url = URL(string: artURL), !artURL.isEmpty {
+        let artworkTrackID = trackID
         URLSession.shared.dataTask(with: url) { data, _, _ in
             if let data = data, let image = NSImage(data: data) {
                 let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                 DispatchQueue.main.async {
+                    guard currentTrackID == artworkTrackID else {
+                        return
+                    }
                     var current = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
                     current[MPMediaItemPropertyArtwork] = artwork
                     MPNowPlayingInfoCenter.default().nowPlayingInfo = current

@@ -900,6 +900,9 @@ func (m *Model) handleSearchResultEnter() tea.Cmd {
 }
 
 func (m *Model) loadCollection(id, title string, tracks []app.Track) {
+	wasFlowQueue := m.app.IsFlowQueue
+	flowLoadingMore := m.app.FlowLoadingMore
+	flowNextIndex := m.app.FlowNextIndex
 	m.app.CurrentPlaylistID = stringPtr(id)
 	m.app.CurrentTracks = append([]app.Track(nil), tracks...)
 	if id == "__favorites__" {
@@ -913,9 +916,15 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	if m.ready {
 		m.app.ActivePanel = app.ActivePanelMain
 	}
-	m.app.IsFlowQueue = false
-	m.app.FlowLoadingMore = false
-	m.app.FlowNextIndex = 0
+	if len(m.app.QueueTracks) == 0 || m.app.QueueIndex == nil {
+		m.app.IsFlowQueue = false
+		m.app.FlowLoadingMore = false
+		m.app.FlowNextIndex = 0
+	} else {
+		m.app.IsFlowQueue = wasFlowQueue
+		m.app.FlowLoadingMore = flowLoadingMore
+		m.app.FlowNextIndex = flowNextIndex
+	}
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
 }
 
@@ -985,9 +994,7 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 		m.app.StatusMessage = fmt.Sprintf("Searching for %q...", query)
 		return searchCmd(m.loader, query)
 	case "backspace":
-		if len(m.app.SearchQuery) > 0 {
-			m.app.SearchQuery = m.app.SearchQuery[:len(m.app.SearchQuery)-1]
-		}
+		m.app.SearchQuery = trimLastRune(m.app.SearchQuery)
 		return nil
 	}
 	if len(msg.Text) > 0 {
@@ -1061,6 +1068,14 @@ func (m *Model) handleNext() tea.Cmd {
 		m.app.FlowLoadingMore = true
 		m.app.StatusMessage = "Loading more Flow..."
 		return loadFlowCmd(m.loader, m.app.FlowNextIndex, true, true)
+	}
+	if m.app.RepeatMode == app.RepeatModeAll && len(m.app.QueueTracks) > 0 {
+		m.app.QueueIndex = intPtr(0)
+		m.app.QueueState.Select(intPtr(0))
+		return m.scheduleTrackPlayback(m.app.QueueTracks[0].ID, qualityFromConfig(m.app.Config.DefaultQuality), 0, true)
+	}
+	if m.app.RepeatMode == app.RepeatModeOne && current >= 0 && current < len(m.app.QueueTracks) {
+		return m.scheduleTrackPlayback(m.app.QueueTracks[current].ID, qualityFromConfig(m.app.Config.DefaultQuality), 0, true)
 	}
 	return nil
 }
@@ -1528,6 +1543,14 @@ func (m Model) hasLoadingPrebuffer() bool {
 
 func prebufferKey(trackID string, quality deezer.AudioQuality) string {
 	return string(quality) + "\x00" + trackID
+}
+
+func trimLastRune(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	return string(runes[:len(runes)-1])
 }
 
 func (m *Model) handlePlaybackFinished() tea.Cmd {

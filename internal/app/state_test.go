@@ -57,6 +57,21 @@ func TestHandleDownOnMainAdvancesThroughTrackListAndStopsAtEnd(t *testing.T) {
 	assertSelected(t, app.MainState.Selected(), 2)
 }
 
+func TestHandleDownOnSearchTracksStopsAtLastRenderedTrack(t *testing.T) {
+	app := testApp()
+	app.ActivePanel = ActivePanelMain
+	app.ShowingSearchResult = true
+	app.SearchCategory = SearchCategoryTracks
+	app.CurrentTracks = []Track{track("1", "One", "A"), track("2", "Two", "B")}
+	app.MainState.Select(intPtr(0))
+
+	app.HandleDown()
+	assertSelected(t, app.MainState.Selected(), 1)
+
+	app.HandleDown()
+	assertSelected(t, app.MainState.Selected(), 1)
+}
+
 func TestHandleUpOnMainStaysAtFirstTrackRow(t *testing.T) {
 	app := testApp()
 	app.ActivePanel = ActivePanelMain

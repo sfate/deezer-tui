@@ -107,7 +107,7 @@ Currently app has three themes: [Aetheria](https://github.com/JJDizz1L/aetheria)
 Theme can be set in the config file or switched in-app. The default theme is Aetheria:
 ```json
 {
-  "theme": "aetheria"
+  "theme": "Aetheria"
 }
 ```
 
