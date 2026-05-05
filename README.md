@@ -1,66 +1,134 @@
-![Deezer TUI Preview](images/preview.png)
-> [!IMPORTANT]  
-> This project was heavily "vibecoded" with AI. I put it together quickly because I just wanted a simple deezer TUI for my own personal use.
+# deezer-tui
+
+TUI client for Deezer, written on Go, based on Bubble Tea.
+
+![Deezer TUI loading](images/preview-loading.png)
+
+## Features
+
+- Deezer [ARL login](https://www.dumpmedia.com/deezplus/deezer-arl.html#part2) stored per [config](#Configuration)
+- Browse Home, Flow, Explore, Favorites, and user playlists
+- Search tracks, playlists, and artists
+- Queue playback with next/previous controls
+- Repeat modes: off, all, one
+- Favorites sorting by added date, ascending or descending
+- Streaming quality selection: 128 kbps, 320 kbps, and FLAC
+- Playback retry on failure with per-song quality fallback
+- Seek controls for non-FLAC playback
+- Live quality switching while preserving position where possible
+- Configurable crossfade and automatic near-end transitions
+- Album artwork rendering in supported terminals
+- macOS Now Playing / media key integration through the native helper
+- macOS native playback helper for pause, resume, volume, and stop
+- Linux/other playback through the Go audio backend
+- Theme support: Aetheria and Gruvbox
+
+> [!NOTE]
+> Discord Rich Presence is intentionally not implemented.
 
 ## Controls
 
-    Arrow Keys / HJKL - Navigate
-
-    TAB - Switch Focus
-
-    Enter - Select
-
-    P / Space - Play/Pause
-
-    / - Search
-
-    Q - Quit
-
-## Features
-- Browse your Playlists, Favorites
-- Explore, Home feed
-- Search for tracks, albums, artists, and playlists
-- Queue
-- Album Artwork support (kitty and ueberzugpp has full quality)
-- Multiple quality options for streaming (128kbps, 320kbps, and FLAC)
-- Discord Rich Presence support
-- Cross Fade support (configurable in settings)
-- [ARL login](https://www.dumpmedia.com/deezplus/deezer-arl.html#part2)
-
-## Installation
-
-<details>
-<summary><b>Arch Based (AUR)</b></summary>
-<br>
-
-Available in the AUR as `deezer-tui-bin`. You can install it using your favorite AUR helper like `paru` or `yay`:
-
-```bash
-paru -S deezer-tui-bin
+```text
+Arrow keys / HJKL  Navigate
+Tab                Switch focus
+Shift+Tab          Switch focus backward
+Enter              Select
+Space              Play/pause or play selected track
+N                  Next track
+P                  Previous track
+R                  Cycle repeat mode
+,                  Seek back 10 seconds
+.                  Seek forward 10 seconds
+U                  Lower playback quality
+I                  Raise playback quality
++ / -              Volume up/down
+S                  Toggle Favorites sort direction
+/                  Search
+Esc                Leave search/settings
+Q                  Quit
 ```
 
-</details>
+## Build From Source
 
-<details>
-<summary><b>Ubuntu & Debian</b></summary>
+Requirements:
 
-    Head over to the (Releases page)[https://github.com/Minuga-RC/deezer-tui/releases] and download the latest .deb file.
+- Go `1.25.9` or newer
+- macOS only: Xcode command line tools for the Swift playback helper
 
-    Open your terminal in your downloads folder and run:
+Build the binary from the repository root:
 
-Bash
+```bash
+make build
+```
 
-sudo apt install ./deezer-tui_*_amd64.deb
+On macOS, `make build` also precompiles the native playback helper into the user cache.
 
-</details>
+The binary is written to:
 
-<details>
-<summary><b>Other Linux (Standalone Binary)</b></summary>
+```bash
+./bin/deezer-tui
+```
 
-If you aren't on Arch or Debian, you can just grab the pre-compiled binary from the Releases page, make it executable, and run it directly!
+For a direct development run:
 
-</details>
+```bash
+go run ./cmd/deezer-tui
+```
 
-## Pick Up This Project
+Useful checks:
 
-Since I originally made this just to fit my own needs, I don't plan on actively maintaining or expanding it. If you stumble across this and want to pick up the project, clean up the code, or add new features please do!
+```bash
+make lint
+make audit
+make test
+```
+
+## Configuration
+
+The app reads:
+
+```bash
+~/.deezer-tui-config.json
+```
+
+At minimum, set a valid Deezer `arl` value:
+
+```json
+{
+  "arl": "your_deezer_arl"
+}
+```
+
+The app will fill defaults for missing settings.
+
+## Colors
+
+Currently app has three themes: [Aetheria](https://github.com/JJDizz1L/aetheria), [Gruvbox](https://github.com/morhetz/gruvbox), and Winamp.
+Theme can be set in the config file or switched in-app. The default theme is Aetheria:
+```json
+{
+  "theme": "Aetheria"
+}
+```
+
+## Preview
+
+![Deezer TUI preview](images/preview.png)
+
+## TODO
+
+- [] Add login screen to get and save ARL from user input
+- [] Add Linux MPRIS/media-key support behind the same media-control abstraction used for macOS
+- [] Add lyrics loading and a lyrics view
+- [] Improve FLAC seeking, or keep documenting FLAC as restart-only for seek/quality transitions
+- [] Add broader manual smoke-test documentation for macOS Control Center/media keys
+- [] Improve packaging and release artifacts for macOS and Linux
+- [] Harden Deezer payload parsing for API shape changes
+
+## Kudos
+
+Original idea and inspiration was taken from [Minuga-RC/deezer-tui](https://github.com/Minuga-RC/deezer-tui).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
