@@ -2,7 +2,7 @@
 
 TUI client for Deezer, written on Go, based on Bubble Tea.
 
-![Deezer TUI loading](images/preview-loading.png)
+<img src='images/preview-loading.png' width='550' alt='Deezer TUI loading' /> 
 
 ## Features
 
