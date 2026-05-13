@@ -60,6 +60,8 @@ type Track struct {
 	ID        string
 	Title     string
 	Artist    string
+	Album     string
+	Year      string
 	AddedAtMS *int64
 }
 
@@ -686,8 +688,10 @@ func (c *Client) FetchFlowTracks(ctx context.Context, index int) ([]Track, error
 		if artistMap, ok := item["artist"].(map[string]any); ok {
 			artist = firstNonEmptyString(getString(artistMap, "name"), "Unknown artist")
 		}
+		album := getString(getMap(item, "album"), "title")
+		year := parseTrackYear(item)
 		if id != "" {
-			tracks = append(tracks, Track{ID: id, Title: title, Artist: artist})
+			tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year})
 		}
 	}
 
@@ -908,10 +912,16 @@ func ExtractTracksRecursive(value any, limit int) []Track {
 				getString(getMap(typed, "artist"), "name"),
 				getString(getMapAny(firstFromArray(getArray(typed, "ARTISTS"))), "ART_NAME"),
 			)
+			album := firstNonEmptyString(
+				getString(typed, "ALB_TITLE"),
+				getString(typed, "ALBUM_TITLE"),
+				getString(getMap(typed, "album"), "title"),
+			)
+			year := parseTrackYear(typed)
 			if id != "" && title != "" && artist != "" {
 				if _, ok := seen[id]; !ok {
 					seen[id] = struct{}{}
-					out = append(out, Track{ID: id, Title: title, Artist: artist})
+					out = append(out, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year})
 					if len(out) >= limit {
 						return
 					}
@@ -957,8 +967,14 @@ func parseTracksFromCandidates(root map[string]any, paths ...[]string) []Track {
 				getString(getMapAny(firstFromArray(getArray(item, "ARTISTS"))), "ART_NAME"),
 				"Unknown artist",
 			)
+			album := firstNonEmptyString(
+				getString(item, "ALB_TITLE"),
+				getString(item, "ALBUM_TITLE"),
+				getString(getMap(item, "album"), "title"),
+			)
+			year := parseTrackYear(item)
 			if id != "" {
-				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, AddedAtMS: parseTrackAddedAtMS(item)})
+				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year, AddedAtMS: parseTrackAddedAtMS(item)})
 			}
 		}
 		if len(tracks) > 0 {
@@ -979,6 +995,36 @@ func parseTrackAddedAtMS(item map[string]any) *int64 {
 		}
 	}
 	return nil
+}
+
+func parseTrackYear(item map[string]any) string {
+	for _, key := range []string{"YEAR", "year", "PHYSICAL_RELEASE_DATE", "DIGITAL_RELEASE_DATE", "RELEASE_DATE", "release_date", "DATE", "date"} {
+		if year := extractYear(item[key]); year != "" {
+			return year
+		}
+	}
+	if year := extractYear(getMap(item, "album")["release_date"]); year != "" {
+		return year
+	}
+	return ""
+}
+
+func extractYear(raw any) string {
+	switch value := raw.(type) {
+	case float64:
+		if value >= 1000 {
+			return strconv.Itoa(int(value))
+		}
+	case string:
+		value = strings.TrimSpace(value)
+		if len(value) >= 4 {
+			year := value[:4]
+			if _, err := strconv.Atoi(year); err == nil {
+				return year
+			}
+		}
+	}
+	return ""
 }
 
 func parseTimestampMS(raw any) (int64, bool) {

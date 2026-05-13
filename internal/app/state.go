@@ -94,6 +94,8 @@ type Track struct {
 	ID        string
 	Title     string
 	Artist    string
+	Album     string
+	Year      string
 	AddedAtMS *int64
 }
 
@@ -270,6 +272,9 @@ func (a *App) HandleUp() {
 		if a.ViewingSettings {
 			current := derefOrZero(a.SettingsState.Selected())
 			a.SettingsState.Select(intPtr(max0(current - 1)))
+		} else if a.ShowingSearchResult {
+			current := derefOrZero(a.MainState.Selected())
+			a.MainState.Select(intPtr(max0(current - 1)))
 		} else if len(a.CurrentTracks) > 0 {
 			current := derefOrZero(a.MainState.Selected())
 			a.MainState.Select(intPtr(max0(current - 1)))

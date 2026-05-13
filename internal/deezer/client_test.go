@@ -176,7 +176,7 @@ func TestFetchSearchResultsParsesTracksPlaylistsAndArtists(t *testing.T) {
 			"results": map[string]any{
 				"TRACK": map[string]any{
 					"data": []map[string]any{
-						{"SNG_ID": "1", "SNG_TITLE": "One", "ART_NAME": "A"},
+						{"SNG_ID": "1", "SNG_TITLE": "One", "ART_NAME": "A", "ALB_TITLE": "Album", "PHYSICAL_RELEASE_DATE": "2024-03-01"},
 					},
 				},
 				"PLAYLIST": map[string]any{
@@ -212,6 +212,9 @@ func TestFetchSearchResultsParsesTracksPlaylistsAndArtists(t *testing.T) {
 
 	if len(results.Tracks) != 1 || len(results.Playlists) != 1 || len(results.Artists) != 1 {
 		t.Fatalf("unexpected search result sizes: tracks=%d playlists=%d artists=%d", len(results.Tracks), len(results.Playlists), len(results.Artists))
+	}
+	if results.Tracks[0].Album != "Album" || results.Tracks[0].Year != "2024" {
+		t.Fatalf("unexpected search track album/year: %#v", results.Tracks[0])
 	}
 }
 

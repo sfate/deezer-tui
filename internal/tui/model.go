@@ -501,6 +501,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.ActivePanel = app.ActivePanelNavigation
 			m.app.StatusMessage = "Library"
 		case "tab":
+			if m.app.ActivePanel == app.ActivePanelMain && m.app.ShowingSearchResult {
+				m.app.SwitchSearchCategoryRight()
+				return m, nil
+			}
 			m.cyclePanelForward()
 		case "shift+tab":
 			m.cyclePanelBackward()
@@ -732,6 +736,9 @@ func (m *Model) handleSpacebar() tea.Cmd {
 				return m.startTrackPlayback(track.ID)
 			}
 		case app.ActivePanelMain, app.ActivePanelSearch:
+			if m.app.ShowingSearchResult && m.app.SearchCategory == app.SearchCategoryTracks {
+				return m.playSearchTrack(derefOrZero(m.app.MainState.Selected()))
+			}
 			if m.app.ActivePanel == app.ActivePanelMain && !m.app.ShowingSearchResult {
 				selected := derefOrZero(m.app.MainState.Selected())
 				if selected > 0 {
@@ -861,18 +868,7 @@ func (m *Model) handleSearchResultEnter() tea.Cmd {
 		if len(m.app.CurrentTracks) == 0 {
 			return nil
 		}
-		if selected >= len(m.app.CurrentTracks) {
-			selected = len(m.app.CurrentTracks) - 1
-		}
-		track := m.app.CurrentTracks[selected]
-		m.app.QueueTracks = []app.Track{track}
-		m.app.Queue = formatQueue(m.app.QueueTracks)
-		m.app.QueueIndex = intPtr(0)
-		m.app.QueueState.Select(intPtr(0))
-		m.app.IsPlaying = true
-		m.app.IsFlowQueue = false
-		m.app.StatusMessage = fmt.Sprintf("Selected %s - %s", track.Title, track.Artist)
-		return m.startTrackPlayback(track.ID)
+		return m.playSearchTrack(selected)
 	case app.SearchCategoryPlaylists:
 		if len(m.app.SearchPlaylists) == 0 {
 			return nil
@@ -926,6 +922,27 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 		m.app.FlowNextIndex = flowNextIndex
 	}
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
+}
+
+func (m *Model) playSearchTrack(selected int) tea.Cmd {
+	if len(m.app.CurrentTracks) == 0 {
+		return nil
+	}
+	if selected < 0 {
+		selected = 0
+	}
+	if selected >= len(m.app.CurrentTracks) {
+		selected = len(m.app.CurrentTracks) - 1
+	}
+	track := m.app.CurrentTracks[selected]
+	m.app.QueueTracks = append([]app.Track(nil), m.app.CurrentTracks...)
+	m.app.Queue = formatQueue(m.app.QueueTracks)
+	m.app.QueueIndex = intPtr(selected)
+	m.app.QueueState.Select(intPtr(selected))
+	m.app.IsPlaying = true
+	m.app.IsFlowQueue = false
+	m.app.StatusMessage = fmt.Sprintf("Queued %d search tracks, selected %s - %s", len(m.app.QueueTracks), track.Title, track.Artist)
+	return m.startTrackPlayback(track.ID)
 }
 
 func (m *Model) toggleFavoritesSort() bool {
@@ -1631,71 +1648,83 @@ func (m Model) renderMain(width, height int) string {
 	lines := []string{}
 	if m.app.ViewingSettings {
 		lines = append(lines, m.renderSettingsRows()...)
-	} else if len(m.app.CurrentTracks) == 0 {
-		lines = append(lines, "", paint(" No tracks loaded", activePalette.TextMuted, ""))
-	} else {
-		if m.app.ShowingSearchResult {
-			lines = append(lines, renderSearchTabs(m.app.SearchCategory))
-			lines = append(lines, "")
-		}
+	} else if m.app.ShowingSearchResult {
+		lines = append(lines, renderSearchTabs(m.app.SearchCategory))
+		lines = append(lines, "")
 		selected := derefOrZero(m.app.MainState.Selected())
-		if m.app.ShowingSearchResult {
-			switch m.app.SearchCategory {
-			case app.SearchCategoryTracks:
-				lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
-				lines = append(lines, separatorLine(58, activePalette.Border))
-				visibleRows := max(0, height-2-len(lines))
-				start := scrollStart(selected, len(m.app.CurrentTracks), visibleRows, 0)
-				end := min(len(m.app.CurrentTracks), start+visibleRows)
-				for i := start; i < end; i++ {
-					track := m.app.CurrentTracks[i]
-					label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-					lines = append(lines, trackRow(label, selected == i, activePalette.Aqua))
-				}
-			case app.SearchCategoryPlaylists:
-				lines = append(lines, tableHeader(" Playlist", activePalette.Orange))
-				lines = append(lines, separatorLine(41, activePalette.Border))
-				visibleRows := max(0, height-2-len(lines))
-				start := scrollStart(selected, len(m.app.SearchPlaylists), visibleRows, 0)
-				end := min(len(m.app.SearchPlaylists), start+visibleRows)
-				for i := start; i < end; i++ {
-					pl := m.app.SearchPlaylists[i]
-					label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
-					lines = append(lines, trackRow(label, selected == i, activePalette.Purple))
-				}
-			case app.SearchCategoryArtists:
-				lines = append(lines, tableHeader(" Artist", activePalette.Orange))
-				lines = append(lines, separatorLine(41, activePalette.Border))
-				visibleRows := max(0, height-2-len(lines))
-				start := scrollStart(selected, len(m.app.SearchArtists), visibleRows, 0)
-				end := min(len(m.app.SearchArtists), start+visibleRows)
-				for i := start; i < end; i++ {
-					artist := m.app.SearchArtists[i]
-					label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
-					lines = append(lines, trackRow(label, selected == i, activePalette.Green))
-				}
-			}
-		} else {
-			playAll := trackRow(" Play Collection", selected == 0, activePalette.Yellow)
-			lines = append(lines, playAll)
-			if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
-				lines = append(lines, paint(fmt.Sprintf(" Sort: added date %s", ternary(m.favoritesSortAsc, "asc", "desc")), activePalette.TextMuted, ""))
-			}
-			lines = append(lines, "")
-			lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
-			lines = append(lines, separatorLine(58, activePalette.Border))
+		switch m.app.SearchCategory {
+		case app.SearchCategoryTracks:
+			lines = append(lines, tableHeader(" #  Title                       Artist          Album           Year", activePalette.Orange))
+			lines = append(lines, separatorLine(68, activePalette.Border))
 			visibleRows := max(0, height-2-len(lines))
-			selectedTrack := max0(selected - 1)
-			start := 0
-			if selected > 0 {
-				start = scrollStart(selectedTrack, len(m.app.CurrentTracks), visibleRows, 0)
-			}
+			start := scrollStart(selected, len(m.app.CurrentTracks), visibleRows, 0)
 			end := min(len(m.app.CurrentTracks), start+visibleRows)
 			for i := start; i < end; i++ {
 				track := m.app.CurrentTracks[i]
-				label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
-				lines = append(lines, trackRow(label, selected == i+1, activePalette.Aqua))
+				label := fmt.Sprintf(" %02d %-27s %-15s %-15s %s",
+					i+1,
+					truncate(track.Title, 27),
+					truncate(track.Artist, 15),
+					truncate(emptyFallback(track.Album, "-"), 15),
+					truncate(emptyFallback(track.Year, "-"), 4),
+				)
+				lines = append(lines, trackRow(label, selected == i, activePalette.Aqua))
 			}
+			if len(m.app.CurrentTracks) == 0 {
+				lines = append(lines, paint(" No tracks found", activePalette.TextMuted, ""))
+			}
+		case app.SearchCategoryPlaylists:
+			lines = append(lines, tableHeader(" Playlist", activePalette.Orange))
+			lines = append(lines, separatorLine(41, activePalette.Border))
+			visibleRows := max(0, height-2-len(lines))
+			start := scrollStart(selected, len(m.app.SearchPlaylists), visibleRows, 0)
+			end := min(len(m.app.SearchPlaylists), start+visibleRows)
+			for i := start; i < end; i++ {
+				pl := m.app.SearchPlaylists[i]
+				label := fmt.Sprintf(" %02d %s", i+1, truncate(pl.Title, 40))
+				lines = append(lines, trackRow(label, selected == i, activePalette.Purple))
+			}
+			if len(m.app.SearchPlaylists) == 0 {
+				lines = append(lines, paint(" No playlists found", activePalette.TextMuted, ""))
+			}
+		case app.SearchCategoryArtists:
+			lines = append(lines, tableHeader(" Artist", activePalette.Orange))
+			lines = append(lines, separatorLine(41, activePalette.Border))
+			visibleRows := max(0, height-2-len(lines))
+			start := scrollStart(selected, len(m.app.SearchArtists), visibleRows, 0)
+			end := min(len(m.app.SearchArtists), start+visibleRows)
+			for i := start; i < end; i++ {
+				artist := m.app.SearchArtists[i]
+				label := fmt.Sprintf(" %02d %s", i+1, truncate(artist.Name, 40))
+				lines = append(lines, trackRow(label, selected == i, activePalette.Green))
+			}
+			if len(m.app.SearchArtists) == 0 {
+				lines = append(lines, paint(" No artists found", activePalette.TextMuted, ""))
+			}
+		}
+	} else if len(m.app.CurrentTracks) == 0 {
+		lines = append(lines, "", paint(" No tracks loaded", activePalette.TextMuted, ""))
+	} else {
+		selected := derefOrZero(m.app.MainState.Selected())
+		playAll := trackRow(" Play Collection", selected == 0, activePalette.Yellow)
+		lines = append(lines, playAll)
+		if m.app.CurrentPlaylistID != nil && *m.app.CurrentPlaylistID == "__favorites__" {
+			lines = append(lines, paint(fmt.Sprintf(" Sort: added date %s", ternary(m.favoritesSortAsc, "asc", "desc")), activePalette.TextMuted, ""))
+		}
+		lines = append(lines, "")
+		lines = append(lines, tableHeader(" #  Title                               Artist", activePalette.Orange))
+		lines = append(lines, separatorLine(58, activePalette.Border))
+		visibleRows := max(0, height-2-len(lines))
+		selectedTrack := max0(selected - 1)
+		start := 0
+		if selected > 0 {
+			start = scrollStart(selectedTrack, len(m.app.CurrentTracks), visibleRows, 0)
+		}
+		end := min(len(m.app.CurrentTracks), start+visibleRows)
+		for i := start; i < end; i++ {
+			track := m.app.CurrentTracks[i]
+			label := fmt.Sprintf(" %02d %-35s %s", i+1, truncate(track.Title, 35), truncate(track.Artist, 18))
+			lines = append(lines, trackRow(label, selected == i+1, activePalette.Aqua))
 		}
 	}
 
@@ -2333,6 +2362,13 @@ func formatQueue(tracks []app.Track) []string {
 	return queue
 }
 
+func emptyFallback(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func truncate(s string, width int) string {
 	if width <= 0 || textWidth(s) <= width {
 		return s
@@ -2383,9 +2419,9 @@ func renderSearchTabs(category app.SearchCategory) string {
 	}
 	parts := make([]string, 0, len(tabs))
 	for _, tab := range tabs {
-		label := " " + strings.ToUpper(tab.label) + " "
+		label := fmt.Sprintf(" %-9s ", strings.ToUpper(tab.label))
 		if tab.value == category {
-			label = paint(strings.TrimSpace(label), activePalette.Orange, "")
+			label = paint(label, activePalette.Orange, "")
 		} else {
 			label = paint(label, activePalette.TextMuted, "")
 		}

@@ -105,6 +105,8 @@ func mapTracks(in []deezer.Track) []app.Track {
 			ID:        track.ID,
 			Title:     track.Title,
 			Artist:    track.Artist,
+			Album:     track.Album,
+			Year:      track.Year,
 			AddedAtMS: track.AddedAtMS,
 		})
 	}
