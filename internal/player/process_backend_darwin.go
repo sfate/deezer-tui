@@ -18,7 +18,7 @@ func NewProcessBackend() *ProcessBackend {
 	return &ProcessBackend{}
 }
 
-func (b *ProcessBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error) {
+func (b *ProcessBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, _ EventHandler, onFinished func(error)) (Controller, error) {
 	file, err := os.CreateTemp("", "deezer-tui-*"+qualityExtension(quality))
 	if err != nil {
 		return nil, fmt.Errorf("create temp audio file: %w", err)

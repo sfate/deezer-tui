@@ -93,6 +93,11 @@ type playbackProgressMsg struct {
 	totalMS   uint64
 }
 
+type playbackVisualizerMsg struct {
+	playID int
+	bands  []uint8
+}
+
 type playbackErrorMsg struct {
 	playID int
 	err    error
@@ -162,6 +167,7 @@ type Model struct {
 	activeSearchID    int
 	prebufferStatuses map[string]PrebufferStatus
 	prebufferReady    []string
+	visualizerBands   []uint8
 }
 
 func New() Model {
@@ -359,6 +365,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressSince = time.Time{}
 		m.app.AutoTransitionArmed = false
 		m.app.StatusMessage = "Buffering..."
+		m.visualizerBands = nil
 		if m.pauseRequested {
 			m.session.Pause()
 			m.app.IsPlaying = false
@@ -408,6 +415,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressBaseMS = msg.initialMS
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
+		m.visualizerBands = nil
 		if m.app.IsPlaying {
 			m.app.StatusMessage = "Playing"
 		}
@@ -469,6 +477,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressActive = false
 		m.bufferingPercent = nil
 		m.progressSince = time.Time{}
+		m.visualizerBands = nil
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			return m, m.retryPlaybackAfterError(msg.err)
 		}
@@ -502,6 +511,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(playbackTickCmd(), crossfadeCmd)
 		}
 		return m, playbackTickCmd()
+	case playbackVisualizerMsg:
+		if msg.playID != m.currentPlayID || !m.app.IsPlaying || len(msg.bands) == 0 {
+			return m, listenPlaybackEventCmd(m.playbackEvents)
+		}
+		m.visualizerBands = append(m.visualizerBands[:0], msg.bands...)
+		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case scheduledPlaybackMsg:
 		if msg.requestID != m.playbackRequest || strings.TrimSpace(m.pendingTrackID) == "" {
 			return m, nil
@@ -623,7 +638,7 @@ func (m Model) View() tea.View {
 		m.renderMain(mainWidth, contentHeight),
 	)
 	footer := m.renderPlaybar()
-	status := m.renderStatusLine()
+	status := m.renderStatusArea()
 
 	content := strings.Join([]string{
 		header,
@@ -689,6 +704,7 @@ func (m *Model) togglePlayPause() {
 		m.progressSince = time.Time{}
 		m.app.IsPlaying = false
 		m.app.StatusMessage = "Paused"
+		m.visualizerBands = nil
 		m.syncMediaControl()
 		return
 	}
@@ -1226,6 +1242,10 @@ func (m *Model) adjustSelectedSetting(direction int) {
 		m.app.Config.CrossfadeDurationMS = nextCrossfadeDuration(m.app.Config.CrossfadeDurationMS, direction)
 		m.app.StatusMessage = fmt.Sprintf("Crossfade duration: %dms", m.app.Config.CrossfadeDurationMS)
 		m.persistConfig()
+	case 5:
+		m.app.Config.DisplayEnabled = !m.app.Config.DisplayEnabled
+		m.app.StatusMessage = fmt.Sprintf("Display: %s", onOff(m.app.Config.DisplayEnabled))
+		m.persistConfig()
 	}
 }
 
@@ -1272,6 +1292,7 @@ func (m *Model) scheduleTrackPlayback(trackID string, quality deezer.AudioQualit
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
 	m.artworkURL = ""
+	m.visualizerBands = nil
 	if resetRetries {
 		m.playbackRetries = 0
 	}
@@ -1314,6 +1335,7 @@ func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality dee
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
 	m.artworkURL = ""
+	m.visualizerBands = nil
 	if resetRetries {
 		m.playbackRetries = 0
 	}
@@ -1966,26 +1988,43 @@ func (m Model) renderHeader() string {
 	return renderTripleLine(left, center, right, m.width)
 }
 
+func (m Model) renderStatusArea() string {
+	if !m.app.Config.DisplayEnabled || m.width < 64 {
+		return m.renderStatusLine()
+	}
+	gap := 2
+	statusWidth := max(30, (m.width-gap)/2)
+	displayWidth := max(30, m.width-gap-statusWidth)
+	return joinColumns(
+		m.renderStatusPanel(statusWidth),
+		m.renderDisplayPanel(displayWidth),
+	)
+}
+
 func (m Model) renderStatusLine() string {
+	return m.renderStatusPanel(m.width)
+}
+
+func (m Model) renderStatusPanel(width int) string {
 	title := "Nothing playing"
 	artist := "-"
-	progress := renderProgress(0, 0, max(20, min(48, m.width-26)))
+	progress := renderProgress(0, 0, max(20, min(48, width-26)))
 	source := displayCollectionTitle(derefString(m.app.CurrentPlaylistID, "Browse"))
 	quality := "-"
 	elapsed := "00:00"
 	total := "00:00"
 	queueInfo := "-"
 	if m.app.NowPlaying != nil {
-		title = truncate(m.app.NowPlaying.Title, max(20, m.width-22))
-		artist = truncate(m.app.NowPlaying.Artist, max(20, m.width-22))
-		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, m.width-26)))
+		title = truncate(m.app.NowPlaying.Title, max(20, width-22))
+		artist = truncate(m.app.NowPlaying.Artist, max(20, width-22))
+		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, width-26)))
 		quality = qualityLabel(m.app.NowPlaying.Quality)
 		elapsed = formatClock(m.app.NowPlaying.CurrentMS)
 		total = formatClock(m.app.NowPlaying.TotalMS)
 	} else if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		track := m.app.QueueTracks[*m.app.QueueIndex]
-		title = truncate(track.Title, max(20, m.width-22))
-		artist = truncate(track.Artist, max(20, m.width-22))
+		title = truncate(track.Title, max(20, width-22))
+		artist = truncate(track.Artist, max(20, width-22))
 	}
 	if m.app.QueueIndex != nil && len(m.app.QueueTracks) > 0 {
 		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
@@ -2007,9 +2046,14 @@ func (m Model) renderStatusLine() string {
 	body := joinColumns(
 		" ",
 		m.renderArtworkSlot(art, 16, 9),
-		m.renderTextSlot(strings.Join(lines, "\n"), max(24, m.width-24), 9, 1, 1),
+		m.renderTextSlot(strings.Join(lines, "\n"), max(24, width-24), 9, 1, 1),
 	)
-	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, m.width, 11)
+	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, width, 11)
+}
+
+func (m Model) renderDisplayPanel(width int) string {
+	body := m.renderDisplayBody(max(1, width-2), 9)
+	return m.renderPanel("Display", body, m.app.IsPlaying && len(m.visualizerBands) > 0, width, 11)
 }
 
 func (m Model) renderPanel(title, body string, active bool, width, height int) string {
@@ -2174,6 +2218,13 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 			},
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
 				events <- playbackProgressMsg{playID: playID, currentMS: currentMS, totalMS: totalMS}
+			},
+			OnAudioBands: func(bands []uint8) {
+				copied := append([]uint8(nil), bands...)
+				select {
+				case events <- playbackVisualizerMsg{playID: playID, bands: copied}:
+				default:
+				}
 			},
 			OnError: func(err error) {
 				events <- playbackErrorMsg{playID: playID, err: err}
@@ -2539,6 +2590,66 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 	return fmt.Sprintf("[%s%s] %s", filledBar, emptyBar, timing)
 }
 
+func (m Model) renderVisualizerLine(width int) string {
+	if !m.app.IsPlaying || len(m.visualizerBands) == 0 || width < 19 {
+		return ""
+	}
+	bars := []string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
+	parts := make([]string, 0, len(m.visualizerBands))
+	for _, band := range m.visualizerBands {
+		if band == 0 {
+			parts = append(parts, bars[0])
+			continue
+		}
+		idx := int(band) - 1
+		if idx >= len(bars) {
+			idx = len(bars) - 1
+		}
+		parts = append(parts, bars[idx])
+	}
+	line := strings.Join(parts, " ")
+	if textWidth(line) > width {
+		return ""
+	}
+	return line
+}
+
+func (m Model) renderDisplayBody(width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	lines := make([]string, height)
+	if !m.app.Config.DisplayEnabled || !m.app.IsPlaying || len(m.visualizerBands) == 0 {
+		for i := range lines {
+			lines[i] = strings.Repeat(" ", width)
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	bandCount := len(m.visualizerBands)
+	gapCount := max(0, bandCount-1)
+	barWidth := max(1, (width-gapCount)/bandCount)
+	usedWidth := bandCount*barWidth + gapCount
+	leftPad := max(0, (width-usedWidth)/2)
+	for row := 0; row < height; row++ {
+		threshold := uint8(height - row)
+		parts := make([]string, 0, bandCount)
+		for _, band := range m.visualizerBands {
+			cell := strings.Repeat(" ", barWidth)
+			if band >= threshold {
+				cell = paint(strings.Repeat("█", barWidth), activePalette.Aqua, "")
+			}
+			parts = append(parts, cell)
+		}
+		line := strings.Repeat(" ", leftPad) + strings.Join(parts, " ")
+		lines[row] = fitToWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func formatClock(ms uint64) string {
 	seconds := ms / 1000
 	return fmt.Sprintf("%02d:%02d", seconds/60, seconds%60)
@@ -2752,6 +2863,7 @@ func (m Model) renderSettingsRows() []string {
 		{label: "Quality", value: qualityLabel(m.app.Config.DefaultQuality), color: activePalette.Purple},
 		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: activePalette.Orange},
 		{label: "Duration", value: fmt.Sprintf("%dms", m.app.Config.CrossfadeDurationMS), color: activePalette.Yellow},
+		{label: "Display", value: onOff(m.app.Config.DisplayEnabled), color: activePalette.Aqua},
 	}
 	lines := make([]string, 0, len(rows))
 	for i, row := range rows {

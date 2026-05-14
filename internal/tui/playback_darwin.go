@@ -78,15 +78,17 @@ func (r *defaultPlayerRuntime) UpdateMediaControl(state MediaControlState) {
 }
 
 type darwinPlaybackSession struct {
-	mu       sync.Mutex
-	file     string
-	paused   bool
-	stopped  bool
-	volume   float32
-	done     chan error
-	token    int
-	manager  *darwinHelperManager
-	finished bool
+	mu             sync.Mutex
+	file           string
+	paused         bool
+	stopped        bool
+	volume         float32
+	done           chan error
+	token          int
+	manager        *darwinHelperManager
+	finished       bool
+	visualizerStop chan struct{}
+	visualizerOnce sync.Once
 }
 
 func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPrebufferStore, trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) {
@@ -146,6 +148,14 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 		}
 		handler.OnPlaybackProgress(initialMS, total)
 	}
+	if handler.OnAudioBands != nil {
+		stop := make(chan struct{})
+		s.mu.Lock()
+		s.visualizerStop = stop
+		s.mu.Unlock()
+		go player.StreamVisualizerFile(s.file, quality, initialMS, stop, handler.OnAudioBands)
+		defer s.stopVisualizer()
+	}
 
 	err = <-finishCh
 	s.mu.Lock()
@@ -191,12 +201,28 @@ func (s *darwinPlaybackSession) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	s.stopVisualizerLocked()
 	if s.finished {
 		return
 	}
 	if s.token != 0 {
 		_ = s.manager.stop(s.token)
 	}
+}
+
+func (s *darwinPlaybackSession) stopVisualizer() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopVisualizerLocked()
+}
+
+func (s *darwinPlaybackSession) stopVisualizerLocked() {
+	if s.visualizerStop == nil {
+		return
+	}
+	s.visualizerOnce.Do(func() {
+		close(s.visualizerStop)
+	})
 }
 
 func (s *darwinPlaybackSession) FadeOutStop(duration time.Duration) {

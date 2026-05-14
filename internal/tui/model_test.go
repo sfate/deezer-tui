@@ -362,7 +362,7 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	model.app.SettingsState.Select(intPtr(0))
 
 	view := model.renderMain(80, 12)
-	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:"} {
+	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:", "Display:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected settings view to contain %q", want)
 		}
@@ -478,6 +478,29 @@ func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
 	_ = nextModel.(Model)
 	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQualityFlac {
 		t.Fatalf("expected playback to use FLAC quality, got %#v", runtime.qualities)
+	}
+}
+
+func TestSettingsDisplayPersists(t *testing.T) {
+	cfg := config.Default()
+	cfg.DisplayEnabled = true
+	model := NewWithLoader(cfg, &fakeLoader{})
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(5))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.Config.DisplayEnabled {
+		t.Fatal("expected display setting to be disabled")
+	}
+	if len(saved) != 1 || saved[0].DisplayEnabled {
+		t.Fatalf("expected disabled display setting to be persisted, got %#v", saved)
 	}
 }
 
@@ -1481,6 +1504,46 @@ func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
 	view := model.renderStatusLine()
 	if !strings.Contains(view, "NO ART") || !strings.Contains(view, "+--------+") {
 		t.Fatal("expected default artwork placeholder")
+	}
+}
+
+func TestStatusAreaRendersDisplayPanelWhenEnabled(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusArea()
+	if !strings.Contains(view, "Status") || !strings.Contains(view, "Display") {
+		t.Fatal("expected status and display panels")
+	}
+	if !strings.Contains(view, "█") {
+		t.Fatal("expected visualizer bars in display panel")
+	}
+}
+
+func TestStatusAreaHidesDisplayPanelWhenDisabled(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.Config.DisplayEnabled = false
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusArea()
+	if strings.Contains(view, "Display") || strings.Contains(view, "█") {
+		t.Fatal("did not expect display panel or visualizer bars")
+	}
+}
+
+func TestStatusLineDoesNotIncludeVisualizer(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusLine()
+	if strings.Contains(view, "▁") || strings.Contains(view, "█") {
+		t.Fatal("did not expect visualizer inside status panel")
 	}
 }
 

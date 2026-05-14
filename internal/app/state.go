@@ -31,7 +31,7 @@ const (
 	CommandShutdown
 )
 
-const SettingsItemCount = 5
+const SettingsItemCount = 6
 
 type SearchCategory int
 

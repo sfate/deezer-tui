@@ -47,6 +47,7 @@ type Config struct {
 	Theme               colorscheme.Name `json:"theme"`
 	CrossfadeEnabled    bool             `json:"crossfade_enabled"`
 	CrossfadeDurationMS uint64           `json:"crossfade_duration_ms"`
+	DisplayEnabled      bool             `json:"display_enabled"`
 	DefaultQuality      AudioQuality     `json:"default_quality"`
 	ARL                 string           `json:"arl"`
 }
@@ -56,6 +57,7 @@ func Default() Config {
 		Theme:               colorscheme.Aetheria,
 		CrossfadeEnabled:    false,
 		CrossfadeDurationMS: 0,
+		DisplayEnabled:      true,
 		DefaultQuality:      AudioQuality320,
 		ARL:                 "",
 	}

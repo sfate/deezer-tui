@@ -39,7 +39,7 @@ func NewBeepBackend() *BeepBackend {
 	}
 }
 
-func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error) {
+func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error) {
 	if err := b.ensureSpeaker(); err != nil {
 		return nil, err
 	}
@@ -52,6 +52,13 @@ func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, o
 	playback := beep.Streamer(streamer)
 	if format.SampleRate != b.targetSampleRate {
 		playback = beep.Resample(defaultResampleQuality, format.SampleRate, b.targetSampleRate, playback)
+	}
+	if handler.OnAudioBands != nil {
+		playback = &VisualizerStreamer{
+			Streamer:   playback,
+			SampleRate: b.targetSampleRate,
+			OnBands:    handler.OnAudioBands,
+		}
 	}
 
 	ctrl := &beep.Ctrl{Streamer: playback}
