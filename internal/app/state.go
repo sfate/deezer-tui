@@ -94,6 +94,8 @@ type Track struct {
 	ID        string
 	Title     string
 	Artist    string
+	Album     string
+	Year      string
 	AddedAtMS *int64
 }
 
@@ -150,6 +152,7 @@ type App struct {
 	CurrentPlaylistID   *string
 	StatusMessage       string
 	IsSearching         bool
+	SearchLoading       bool
 	SearchQuery         string
 	AutoTransitionArmed bool
 	FlowNextIndex       int
@@ -179,6 +182,7 @@ func New(cfg config.Config) *App {
 		ViewingSettings:     false,
 		StatusMessage:       "Status: Waiting...",
 		IsSearching:         false,
+		SearchLoading:       false,
 		SearchQuery:         "",
 		AutoTransitionArmed: false,
 		FlowNextIndex:       0,
@@ -270,6 +274,9 @@ func (a *App) HandleUp() {
 		if a.ViewingSettings {
 			current := derefOrZero(a.SettingsState.Selected())
 			a.SettingsState.Select(intPtr(max0(current - 1)))
+		} else if a.ShowingSearchResult {
+			current := derefOrZero(a.MainState.Selected())
+			a.MainState.Select(intPtr(max0(current - 1)))
 		} else if len(a.CurrentTracks) > 0 {
 			current := derefOrZero(a.MainState.Selected())
 			a.MainState.Select(intPtr(max0(current - 1)))
@@ -356,6 +363,7 @@ func (a *App) SwitchSearchCategoryRight() {
 func (a *App) LoadFlowTracks(tracks []Track, autoplay bool) *string {
 	a.CurrentTracks = cloneTracks(tracks)
 	a.ShowingSearchResult = false
+	a.SearchLoading = false
 	a.SearchPlaylists = nil
 	a.SearchArtists = nil
 	a.MainState.Select(intPtr(0))

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,9 @@ const (
 	defaultMediaURL   = "https://media.deezer.com/v1/get_url"
 	defaultFlowAPIURL = "https://api.deezer.com"
 	defaultUserAgent  = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+	searchYearEnrichmentLimit   = 10
+	searchYearEnrichmentTimeout = 2 * time.Second
 )
 
 type AudioQuality string
@@ -60,6 +64,8 @@ type Track struct {
 	ID        string
 	Title     string
 	Artist    string
+	Album     string
+	Year      string
 	AddedAtMS *int64
 }
 
@@ -564,6 +570,9 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 		[]string{"results", "SONGS", "data"},
 		[]string{"results", "tracks", "data"},
 	)
+	enrichCtx, cancel := context.WithTimeout(ctx, searchYearEnrichmentTimeout)
+	defer cancel()
+	results.Tracks = c.enrichSearchTrackYears(enrichCtx, results.Tracks)
 
 	playlists := getArrayPathCandidates(response,
 		[]string{"results", "PLAYLIST", "data"},
@@ -598,6 +607,81 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 	}
 
 	return results, nil
+}
+
+func (c *Client) enrichSearchTrackYears(ctx context.Context, tracks []Track) []Track {
+	if len(tracks) == 0 {
+		return tracks
+	}
+
+	out := make([]Track, len(tracks))
+	copy(out, tracks)
+
+	var wg sync.WaitGroup
+	jobs := make(chan int)
+	enrichCount := min(searchYearEnrichmentLimit, len(out))
+	workers := min(4, enrichCount)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if strings.TrimSpace(out[idx].Year) != "" {
+					continue
+				}
+				album, year, ok := c.fetchTrackAlbumYear(ctx, out[idx].ID)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(out[idx].Album) == "" {
+					out[idx].Album = album
+				}
+				out[idx].Year = year
+			}
+		}()
+	}
+	for i := 0; i < enrichCount; i++ {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return out
+		case jobs <- i:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return out
+}
+
+func (c *Client) fetchTrackAlbumYear(ctx context.Context, trackID string) (string, string, bool) {
+	if strings.TrimSpace(trackID) == "" {
+		return "", "", false
+	}
+	trackURL := fmt.Sprintf("%s/track/%s", c.flowAPIBaseURL, url.PathEscape(trackID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, trackURL, nil)
+	if err != nil {
+		return "", "", false
+	}
+	c.applyHeaders(req, true)
+
+	var response map[string]any
+	raw, err := c.doJSON(req, &response)
+	if err != nil {
+		c.writeDebugDump("search_track_year_error_"+sanitizeDebugFilePart(trackID)+".json", fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return "", "", false
+	}
+	c.writeDebugDump("search_track_year_"+sanitizeDebugFilePart(trackID)+".json", raw)
+
+	album := firstNonEmptyString(
+		getString(response, "album_title"),
+		getString(getMap(response, "album"), "title"),
+	)
+	year := parseTrackYear(response)
+	if year == "" {
+		return album, "", false
+	}
+	return album, year, true
 }
 
 func (c *Client) FetchHomeTracks(ctx context.Context) ([]Track, error) {
@@ -686,8 +770,10 @@ func (c *Client) FetchFlowTracks(ctx context.Context, index int) ([]Track, error
 		if artistMap, ok := item["artist"].(map[string]any); ok {
 			artist = firstNonEmptyString(getString(artistMap, "name"), "Unknown artist")
 		}
+		album := getString(getMap(item, "album"), "title")
+		year := parseTrackYear(item)
 		if id != "" {
-			tracks = append(tracks, Track{ID: id, Title: title, Artist: artist})
+			tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year})
 		}
 	}
 
@@ -878,6 +964,27 @@ func (c *Client) writeDebugDump(fileName, raw string) {
 	_ = os.WriteFile(filepath.Join(base, fileName), []byte(raw), 0o644)
 }
 
+func sanitizeDebugFilePart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 func appendUniqueTracks(out *[]Track, seen map[string]struct{}, tracks []Track, limit int) {
 	for _, track := range tracks {
 		if len(*out) >= limit {
@@ -908,10 +1015,16 @@ func ExtractTracksRecursive(value any, limit int) []Track {
 				getString(getMap(typed, "artist"), "name"),
 				getString(getMapAny(firstFromArray(getArray(typed, "ARTISTS"))), "ART_NAME"),
 			)
+			album := firstNonEmptyString(
+				getString(typed, "ALB_TITLE"),
+				getString(typed, "ALBUM_TITLE"),
+				getString(getMap(typed, "album"), "title"),
+			)
+			year := parseTrackYear(typed)
 			if id != "" && title != "" && artist != "" {
 				if _, ok := seen[id]; !ok {
 					seen[id] = struct{}{}
-					out = append(out, Track{ID: id, Title: title, Artist: artist})
+					out = append(out, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year})
 					if len(out) >= limit {
 						return
 					}
@@ -957,8 +1070,14 @@ func parseTracksFromCandidates(root map[string]any, paths ...[]string) []Track {
 				getString(getMapAny(firstFromArray(getArray(item, "ARTISTS"))), "ART_NAME"),
 				"Unknown artist",
 			)
+			album := firstNonEmptyString(
+				getString(item, "ALB_TITLE"),
+				getString(item, "ALBUM_TITLE"),
+				getString(getMap(item, "album"), "title"),
+			)
+			year := parseTrackYear(item)
 			if id != "" {
-				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, AddedAtMS: parseTrackAddedAtMS(item)})
+				tracks = append(tracks, Track{ID: id, Title: title, Artist: artist, Album: album, Year: year, AddedAtMS: parseTrackAddedAtMS(item)})
 			}
 		}
 		if len(tracks) > 0 {
@@ -979,6 +1098,50 @@ func parseTrackAddedAtMS(item map[string]any) *int64 {
 		}
 	}
 	return nil
+}
+
+func parseTrackYear(item map[string]any) string {
+	for _, key := range []string{
+		"YEAR", "year",
+		"PHYSICAL_RELEASE_DATE", "physical_release_date",
+		"DIGITAL_RELEASE_DATE", "digital_release_date",
+		"ORIGINAL_RELEASE_DATE", "original_release_date",
+		"RELEASE_DATE", "release_date",
+		"DATE_RELEASE", "date_release",
+		"ALB_RELEASE_DATE", "alb_release_date",
+		"ALBUM_RELEASE_DATE", "album_release_date",
+	} {
+		if year := extractYear(item[key]); year != "" {
+			return year
+		}
+	}
+	for _, albumKey := range []string{"album", "ALBUM"} {
+		album := getMap(item, albumKey)
+		for _, key := range []string{"release_date", "RELEASE_DATE", "date_release", "DATE_RELEASE"} {
+			if year := extractYear(album[key]); year != "" {
+				return year
+			}
+		}
+	}
+	return ""
+}
+
+func extractYear(raw any) string {
+	switch value := raw.(type) {
+	case float64:
+		if value >= 1000 {
+			return strconv.Itoa(int(value))
+		}
+	case string:
+		value = strings.TrimSpace(value)
+		if len(value) >= 4 {
+			year := value[:4]
+			if n, err := strconv.Atoi(year); err == nil && n >= 1000 {
+				return year
+			}
+		}
+	}
+	return ""
 }
 
 func parseTimestampMS(raw any) (int64, bool) {
