@@ -86,6 +86,7 @@ type fakePlaybackRuntime struct {
 	started     []string
 	qualities   []deezer.AudioQuality
 	seeked      []uint64
+	handlers    []player.EventHandler
 	prebuffered [][]string
 	session     *fakePlaybackSession
 	startErr    error
@@ -93,10 +94,11 @@ type fakePlaybackRuntime struct {
 	mediaStates []MediaControlState
 }
 
-func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, _ player.EventHandler) (PlaybackSession, error) {
+func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
 	f.qualities = append(f.qualities, quality)
 	f.seeked = append(f.seeked, seekMS)
+	f.handlers = append(f.handlers, handler)
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -1586,6 +1588,46 @@ func TestStatusLineDoesNotIncludeVisualizer(t *testing.T) {
 	view := model.renderStatusLine()
 	if strings.Contains(view, "Display") {
 		t.Fatal("did not expect visualizer inside status panel")
+	}
+}
+
+func TestPlaybackDisablesAudioBandsWhenDisplayModeOff(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	cfg := config.Default()
+	cfg.DisplayMode = config.DisplayModeOff
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, runtime)
+
+	cmd := model.startTrackPlayback("1")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	_ = firstBatchMessage(cmd)
+
+	if len(runtime.handlers) != 1 {
+		t.Fatalf("expected one playback handler, got %d", len(runtime.handlers))
+	}
+	if runtime.handlers[0].OnAudioBands != nil {
+		t.Fatal("did not expect audio bands handler when display mode is off")
+	}
+}
+
+func TestPlaybackEnablesAudioBandsWhenDisplayModeOn(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	cfg := config.Default()
+	cfg.DisplayMode = config.DisplayModeEqualizer
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, runtime)
+
+	cmd := model.startTrackPlayback("1")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	_ = firstBatchMessage(cmd)
+
+	if len(runtime.handlers) != 1 {
+		t.Fatalf("expected one playback handler, got %d", len(runtime.handlers))
+	}
+	if runtime.handlers[0].OnAudioBands == nil {
+		t.Fatal("expected audio bands handler when display mode is enabled")
 	}
 }
 

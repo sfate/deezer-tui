@@ -100,8 +100,10 @@ func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint
 		select {
 		case <-stop:
 			return
+		default:
+		}
+		select {
 		case isPaused = <-paused:
-			continue
 		default:
 		}
 		if isPaused {

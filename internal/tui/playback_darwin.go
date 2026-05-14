@@ -153,14 +153,19 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 		stop := make(chan struct{})
 		pause := make(chan bool, 1)
 		s.mu.Lock()
-		s.visualizerStop = stop
-		s.visualizerPause = pause
-		if s.paused {
-			pause <- true
+		startVisualizer := !s.stopped
+		if startVisualizer {
+			s.visualizerStop = stop
+			s.visualizerPause = pause
+			if s.paused {
+				pause <- true
+			}
 		}
 		s.mu.Unlock()
-		go player.StreamVisualizerFile(s.file, quality, initialMS, stop, pause, handler.OnAudioBands)
-		defer s.stopVisualizer()
+		if startVisualizer {
+			go player.StreamVisualizerFile(s.file, quality, initialMS, stop, pause, handler.OnAudioBands)
+			defer s.stopVisualizer()
+		}
 	}
 
 	err = <-finishCh

@@ -1359,8 +1359,9 @@ func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality dee
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
+	enableVisualizer := displayMode(m.app.Config) != config.DisplayModeOff
 	return tea.Batch(
-		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, seekMS, m.playbackEvents),
+		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, seekMS, enableVisualizer, m.playbackEvents),
 		m.maybeLoadMoreFlowForTail(),
 	)
 }
@@ -2236,7 +2237,7 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
-func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, events chan tea.Msg) tea.Cmd {
+func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, enableVisualizer bool, events chan tea.Msg) tea.Cmd {
 	if runtime == nil {
 		return nil
 	}
@@ -2251,16 +2252,18 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 			OnPlaybackProgress: func(currentMS, totalMS uint64) {
 				events <- playbackProgressMsg{playID: playID, currentMS: currentMS, totalMS: totalMS}
 			},
-			OnAudioBands: func(bands []uint8) {
+			OnError: func(err error) {
+				events <- playbackErrorMsg{playID: playID, err: err}
+			},
+		}
+		if enableVisualizer {
+			handler.OnAudioBands = func(bands []uint8) {
 				copied := append([]uint8(nil), bands...)
 				select {
 				case events <- playbackVisualizerMsg{playID: playID, bands: copied}:
 				default:
 				}
-			},
-			OnError: func(err error) {
-				events <- playbackErrorMsg{playID: playID, err: err}
-			},
+			}
 		}
 		session, err := runtime.Start(trackID, quality, seekMS, handler)
 		if err != nil {
