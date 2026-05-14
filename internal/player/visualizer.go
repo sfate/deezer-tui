@@ -1,9 +1,9 @@
 package player
 
 import (
-	"io"
 	"math"
 	"os"
+	"sync"
 	"time"
 
 	"deezer-tui/internal/deezer"
@@ -23,15 +23,17 @@ type VisualizerStreamer struct {
 	SampleRate beep.SampleRate
 	OnBands    func([]uint8)
 
-	analyzer visualizerAnalyzer
+	mu       sync.Mutex
+	analyzer *asyncVisualizerAnalyzer
+	closed   bool
 }
 
 func (v *VisualizerStreamer) Stream(samples [][2]float64) (int, bool) {
 	n, ok := v.Streamer.Stream(samples)
 	if n > 0 && v.OnBands != nil {
-		v.analyzer.sampleRate = float64(v.SampleRate)
-		v.analyzer.onBands = v.OnBands
-		v.analyzer.add(samples[:n])
+		if analyzer := v.asyncAnalyzer(); analyzer != nil {
+			analyzer.add(samples[:n])
+		}
 	}
 	return n, ok
 }
@@ -43,7 +45,30 @@ func (v *VisualizerStreamer) Err() error {
 	return nil
 }
 
-func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint64, stop <-chan struct{}, onBands func([]uint8)) {
+func (v *VisualizerStreamer) Close() {
+	v.mu.Lock()
+	v.closed = true
+	analyzer := v.analyzer
+	v.analyzer = nil
+	v.mu.Unlock()
+	if analyzer != nil {
+		analyzer.close()
+	}
+}
+
+func (v *VisualizerStreamer) asyncAnalyzer() *asyncVisualizerAnalyzer {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed {
+		return nil
+	}
+	if v.analyzer == nil {
+		v.analyzer = newAsyncVisualizerAnalyzer(float64(v.SampleRate), v.OnBands)
+	}
+	return v.analyzer
+}
+
+func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint64, stop <-chan struct{}, paused <-chan bool, onBands func([]uint8)) {
 	if onBands == nil || path == "" {
 		return
 	}
@@ -53,7 +78,7 @@ func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint
 	}
 	defer func() { _ = file.Close() }()
 
-	streamer, format, err := decodeVisualizerStream(file, quality)
+	streamer, format, err := decodeStream(file, quality)
 	if err != nil {
 		return
 	}
@@ -70,11 +95,22 @@ func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint
 
 	analyzer := visualizerAnalyzer{sampleRate: float64(format.SampleRate), onBands: onBands}
 	buf := make([][2]float64, visualizerWindowSize)
+	isPaused := false
 	for {
 		select {
 		case <-stop:
 			return
+		case isPaused = <-paused:
+			continue
 		default:
+		}
+		if isPaused {
+			select {
+			case <-stop:
+				return
+			case isPaused = <-paused:
+			}
+			continue
 		}
 		start := time.Now()
 		n, ok := streamer.Stream(buf)
@@ -92,6 +128,8 @@ func StreamVisualizerFile(path string, quality deezer.AudioQuality, startMS uint
 			case <-stop:
 				timer.Stop()
 				return
+			case isPaused = <-paused:
+				timer.Stop()
 			case <-timer.C:
 			}
 		}
@@ -118,6 +156,62 @@ func (a *visualizerAnalyzer) add(samples [][2]float64) {
 			a.onBands(analyzeBands(window, a.sampleRate))
 		}
 	}
+}
+
+type asyncVisualizerAnalyzer struct {
+	sampleRate float64
+	onBands    func([]uint8)
+	windows    chan []float64
+	done       chan struct{}
+	once       sync.Once
+	window     []float64
+	lastEmit   time.Time
+}
+
+func newAsyncVisualizerAnalyzer(sampleRate float64, onBands func([]uint8)) *asyncVisualizerAnalyzer {
+	a := &asyncVisualizerAnalyzer{
+		sampleRate: sampleRate,
+		onBands:    onBands,
+		windows:    make(chan []float64, 1),
+		done:       make(chan struct{}),
+	}
+	go a.run()
+	return a
+}
+
+func (a *asyncVisualizerAnalyzer) add(samples [][2]float64) {
+	for _, sample := range samples {
+		a.window = append(a.window, (sample[0]+sample[1])*0.5)
+		for len(a.window) >= visualizerWindowSize {
+			window := append([]float64(nil), a.window[:visualizerWindowSize]...)
+			a.window = a.window[visualizerWindowSize:]
+			if time.Since(a.lastEmit) < visualizerMinPeriod {
+				continue
+			}
+			a.lastEmit = time.Now()
+			select {
+			case a.windows <- window:
+			default:
+			}
+		}
+	}
+}
+
+func (a *asyncVisualizerAnalyzer) run() {
+	for {
+		select {
+		case <-a.done:
+			return
+		case window := <-a.windows:
+			a.onBands(analyzeBands(window, a.sampleRate))
+		}
+	}
+}
+
+func (a *asyncVisualizerAnalyzer) close() {
+	a.once.Do(func() {
+		close(a.done)
+	})
 }
 
 func analyzeBands(samples []float64, sampleRate float64) []uint8 {
@@ -158,10 +252,6 @@ func goertzelPower(samples []float64, sampleRate, freq float64) float64 {
 		q1 = q0
 	}
 	return (q1*q1 + q2*q2 - q1*q2*coeff) / float64(len(samples)*len(samples))
-}
-
-func decodeVisualizerStream(stream io.ReadSeeker, quality deezer.AudioQuality) (beep.StreamSeekCloser, beep.Format, error) {
-	return decodeStream(stream, quality)
 }
 
 func discardSamples(streamer beep.Streamer, count int) {

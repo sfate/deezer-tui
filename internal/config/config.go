@@ -132,6 +132,6 @@ func NormalizeDisplayMode(mode DisplayMode, legacyEnabled bool) DisplayMode {
 		}
 		return DisplayModeEqualizer
 	default:
-		return DisplayModeEqualizer
+		return DisplayModeOff
 	}
 }

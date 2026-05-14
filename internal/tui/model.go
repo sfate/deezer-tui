@@ -2790,22 +2790,6 @@ func displayMode(cfg config.Config) config.DisplayMode {
 	return config.NormalizeDisplayMode(cfg.DisplayMode, cfg.DisplayEnabled)
 }
 
-func normalizedBandAverage(bands []uint8, start, end int) float64 {
-	if len(bands) == 0 {
-		return 0
-	}
-	start = max(0, min(start, len(bands)))
-	end = max(start, min(end, len(bands)))
-	if start == end {
-		return 0
-	}
-	var total int
-	for _, band := range bands[start:end] {
-		total += int(band)
-	}
-	return float64(total) / float64((end-start)*8)
-}
-
 func formatClock(ms uint64) string {
 	seconds := ms / 1000
 	return fmt.Sprintf("%02d:%02d", seconds/60, seconds%60)
