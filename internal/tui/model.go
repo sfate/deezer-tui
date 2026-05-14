@@ -264,6 +264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.app.CurrentPlaylistID = stringPtr(msg.id)
 		if msg.isFlow {
+			m.cancelActiveSearch()
 			m.app.FlowNextIndex = len(msg.tracks)
 			m.app.IsFlowQueue = true
 			trackID := m.app.LoadFlowTracks(msg.tracks, msg.autoplay)
@@ -287,6 +288,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.FlowLoadingMore = false
 		m.app.IsSearching = false
 		m.app.SearchLoading = false
+		m.activeSearchID = 0
 		m.ready = true
 		return m, nil
 	case loadingTickMsg:
@@ -937,7 +939,7 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.SearchPlaylists = nil
 	m.app.SearchArtists = nil
 	m.app.ShowingSearchResult = false
-	m.app.SearchLoading = false
+	m.cancelActiveSearch()
 	m.app.ViewingSettings = false
 	if m.ready {
 		m.app.ActivePanel = app.ActivePanelMain
@@ -952,6 +954,12 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 		m.app.FlowNextIndex = flowNextIndex
 	}
 	m.app.StatusMessage = fmt.Sprintf("Loaded %s (%d tracks)", title, len(tracks))
+}
+
+func (m *Model) cancelActiveSearch() {
+	m.activeSearchID = 0
+	m.app.IsSearching = false
+	m.app.SearchLoading = false
 }
 
 func (m *Model) playSearchTrack(selected int) tea.Cmd {

@@ -1743,6 +1743,71 @@ func TestStaleSearchResultsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestCollectionLoadInvalidatesPendingSearch(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	_ = model.startSearch("old")
+	searchID := model.activeSearchID
+
+	nextModel, _ := model.Update(collectionLoadedMsg{
+		id:     "playlist",
+		title:  "Playlist",
+		tracks: []app.Track{{ID: "playlist-track", Title: "Playlist Track", Artist: "A"}},
+	})
+	updated := nextModel.(Model)
+	if updated.activeSearchID != 0 {
+		t.Fatalf("expected active search to be invalidated, got %d", updated.activeSearchID)
+	}
+
+	nextModel, _ = updated.Update(searchLoadedMsg{
+		requestID: searchID,
+		query:     "old",
+		tracks:    []app.Track{{ID: "search-track", Title: "Search Track", Artist: "B"}},
+	})
+	updated = nextModel.(Model)
+
+	if updated.app.ShowingSearchResult {
+		t.Fatal("expected stale search result not to replace collection")
+	}
+	if len(updated.app.CurrentTracks) != 1 || updated.app.CurrentTracks[0].ID != "playlist-track" {
+		t.Fatalf("expected playlist track to remain loaded, got %#v", updated.app.CurrentTracks)
+	}
+}
+
+func TestFlowLoadInvalidatesPendingSearch(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	_ = model.startSearch("old")
+	searchID := model.activeSearchID
+
+	nextModel, _ := model.Update(collectionLoadedMsg{
+		id:       "__flow__",
+		title:    "Flow",
+		tracks:   []app.Track{{ID: "flow-track", Title: "Flow Track", Artist: "A"}},
+		isFlow:   true,
+		autoplay: false,
+	})
+	updated := nextModel.(Model)
+	if updated.activeSearchID != 0 {
+		t.Fatalf("expected active search to be invalidated, got %d", updated.activeSearchID)
+	}
+
+	nextModel, _ = updated.Update(searchLoadedMsg{
+		requestID: searchID,
+		query:     "old",
+		tracks:    []app.Track{{ID: "search-track", Title: "Search Track", Artist: "B"}},
+	})
+	updated = nextModel.(Model)
+
+	if updated.app.ShowingSearchResult {
+		t.Fatal("expected stale search result not to replace Flow")
+	}
+	if !updated.app.IsFlowQueue {
+		t.Fatal("expected Flow queue state to remain active")
+	}
+	if len(updated.app.CurrentTracks) != 1 || updated.app.CurrentTracks[0].ID != "flow-track" {
+		t.Fatalf("expected Flow track to remain loaded, got %#v", updated.app.CurrentTracks)
+	}
+}
+
 func TestPrebufferReadyStatusSurvivesWindowShift(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
