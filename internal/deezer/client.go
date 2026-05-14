@@ -567,7 +567,9 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 		[]string{"results", "SONGS", "data"},
 		[]string{"results", "tracks", "data"},
 	)
-	results.Tracks = c.enrichSearchTrackYears(ctx, results.Tracks)
+	enrichCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	results.Tracks = c.enrichSearchTrackYears(enrichCtx, results.Tracks)
 
 	playlists := getArrayPathCandidates(response,
 		[]string{"results", "PLAYLIST", "data"},
