@@ -52,7 +52,7 @@ Q                  Quit
 
 Requirements:
 
-- Go `1.25.9` or newer
+- Go `1.26.3` or newer
 - macOS only: Xcode command line tools for the Swift playback helper
 
 Build the binary from the repository root:
