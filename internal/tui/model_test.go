@@ -61,6 +61,27 @@ func (f *fakeLoader) Search(_ context.Context, query string) (SearchData, error)
 	return f.search, nil
 }
 
+func firstNonTickMsg(cmd tea.Cmd) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return msg
+	}
+	for _, batchCmd := range batch {
+		msg := batchCmd()
+		switch msg.(type) {
+		case loadingTickMsg, prebufferTickMsg:
+			continue
+		default:
+			return msg
+		}
+	}
+	return nil
+}
+
 type fakePlaybackRuntime struct {
 	started     []string
 	qualities   []deezer.AudioQuality
@@ -1595,6 +1616,70 @@ func TestSearchBackspaceRemovesWholeRune(t *testing.T) {
 	}
 }
 
+func TestEnterSearchStartsLoadingAndLeavesInputMode(t *testing.T) {
+	loader := &fakeLoader{
+		search: SearchData{
+			Tracks: []app.Track{{ID: "1", Title: "One", Artist: "A"}},
+		},
+	}
+	model := NewWithLoader(config.Default(), loader)
+	model.width = 100
+	model.height = 36
+	model.app.IsSearching = true
+	model.app.ActivePanel = app.ActivePanelSearch
+	model.app.SearchQuery = "artist"
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.IsSearching {
+		t.Fatal("expected search input mode to close while request is loading")
+	}
+	if !updated.app.SearchLoading {
+		t.Fatal("expected search loading state")
+	}
+	if updated.app.ActivePanel != app.ActivePanelMain {
+		t.Fatalf("expected main panel to show search loading, got %v", updated.app.ActivePanel)
+	}
+	view := updated.renderMain(80, 14)
+	if !strings.Contains(view, "Searching for") || !strings.Contains(view, "searching") || !strings.Contains(view, "⡿") {
+		t.Fatal("expected search loading animation in main panel")
+	}
+
+	nextModel, _ = updated.Update(firstNonTickMsg(cmd))
+	updated = nextModel.(Model)
+	if updated.app.SearchLoading {
+		t.Fatal("expected search loading to stop after results load")
+	}
+	if len(updated.app.CurrentTracks) != 1 {
+		t.Fatal("expected fresh search results to load")
+	}
+}
+
+func TestStaleSearchResultsAreIgnored(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+
+	_ = model.startSearch("old")
+	oldID := model.activeSearchID
+	_ = model.startSearch("new")
+	newID := model.activeSearchID
+	if oldID == newID {
+		t.Fatal("expected a new search request id")
+	}
+
+	nextModel, _ := model.Update(searchLoadedMsg{
+		requestID: oldID,
+		query:     "old",
+		tracks:    []app.Track{{ID: "old", Title: "Old", Artist: "A"}},
+	})
+	updated := nextModel.(Model)
+	if !updated.app.SearchLoading {
+		t.Fatal("expected newer search to remain loading")
+	}
+	if updated.app.SearchQuery != "new" {
+		t.Fatalf("expected stale result to be ignored, got query %q", updated.app.SearchQuery)
+	}
+}
+
 func TestPrebufferReadyStatusSurvivesWindowShift(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)
@@ -2034,7 +2119,7 @@ func TestEnterOnSearchArtistStartsSearch(t *testing.T) {
 		t.Fatal("expected artist name to become the active search query")
 	}
 
-	nextModel, _ = updated.Update(cmd())
+	nextModel, _ = updated.Update(firstNonTickMsg(cmd))
 	updated = nextModel.(Model)
 	if len(loader.queries) == 0 || loader.queries[0] != "Aster Lane" {
 		t.Fatal("expected loader search to receive the artist name")

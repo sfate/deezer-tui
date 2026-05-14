@@ -22,9 +22,12 @@ var activePalette = colorscheme.Lookup(colorscheme.Aetheria).Palette
 
 var prebufferSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 
+var searchLoadingFrames = []string{"⡿", "⣟", "⣯", "⣷", "⣾", "⣽", "⣻", "⢿"}
+
 const (
 	seekStepMS                uint64 = 10_000
 	manualPlaybackStartDelay         = 90 * time.Millisecond
+	searchTimeout                    = 20 * time.Second
 	prebufferWindowSize              = 20
 	prebufferCacheStatusLimit        = 20
 )
@@ -47,10 +50,16 @@ type loadFailedMsg struct {
 }
 
 type searchLoadedMsg struct {
+	requestID int
 	query     string
 	tracks    []app.Track
 	playlists []app.Playlist
 	artists   []app.Artist
+}
+
+type searchFailedMsg struct {
+	requestID int
+	message   string
 }
 
 type playbackStartedMsg struct {
@@ -149,6 +158,8 @@ type Model struct {
 	favoritesSortAsc  bool
 	ready             bool
 	loadingFrame      int
+	nextSearchID      int
+	activeSearchID    int
 	prebufferStatuses map[string]PrebufferStatus
 	prebufferReady    []string
 }
@@ -275,10 +286,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.StatusMessage = msg.message
 		m.app.FlowLoadingMore = false
 		m.app.IsSearching = false
+		m.app.SearchLoading = false
 		m.ready = true
 		return m, nil
 	case loadingTickMsg:
-		if !m.ready {
+		if !m.ready || m.app.SearchLoading {
 			m.loadingFrame = (m.loadingFrame + 1) % len(loadingHeartFrames)
 			return m, loadingTickCmd()
 		}
@@ -301,7 +313,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mediaControlCommandMsg:
 		return m, tea.Batch(m.handleMediaControlCommand(msg.command), m.listenMediaControlCmd())
 	case searchLoadedMsg:
+		if msg.requestID != m.activeSearchID {
+			return m, nil
+		}
 		m.app.IsSearching = false
+		m.app.SearchLoading = false
 		m.app.SearchQuery = msg.query
 		m.app.CurrentTracks = msg.tracks
 		m.app.SearchPlaylists = msg.playlists
@@ -312,6 +328,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.MainState.Select(intPtr(0))
 		m.app.CurrentPlaylistID = stringPtr("__search__")
 		m.app.StatusMessage = fmt.Sprintf("Search: %q", msg.query)
+		return m, nil
+	case searchFailedMsg:
+		if msg.requestID != m.activeSearchID {
+			return m, nil
+		}
+		m.app.IsSearching = false
+		m.app.SearchLoading = false
+		m.app.StatusMessage = msg.message
 		return m, nil
 	case playbackStartedMsg:
 		if msg.playID != m.nextPlaybackID {
@@ -497,6 +521,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			m.app.IsSearching = false
+			m.app.SearchLoading = false
+			m.activeSearchID = 0
 			m.app.ViewingSettings = false
 			m.app.ActivePanel = app.ActivePanelNavigation
 			m.app.StatusMessage = "Library"
@@ -553,6 +579,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.app.IsSearching = true
 			m.app.SearchQuery = ""
+			m.app.SearchLoading = false
+			m.activeSearchID = 0
 			m.app.ActivePanel = app.ActivePanelSearch
 			m.app.StatusMessage = "Search: type query and press Enter"
 		}
@@ -886,10 +914,7 @@ func (m *Model) handleSearchResultEnter() tea.Cmd {
 			selected = len(m.app.SearchArtists) - 1
 		}
 		artist := m.app.SearchArtists[selected]
-		m.app.IsSearching = true
-		m.app.SearchQuery = artist.Name
-		m.app.StatusMessage = fmt.Sprintf("Searching for %q...", artist.Name)
-		return searchCmd(m.loader, artist.Name)
+		return m.startSearch(artist.Name)
 	default:
 		return nil
 	}
@@ -908,6 +933,7 @@ func (m *Model) loadCollection(id, title string, tracks []app.Track) {
 	m.app.SearchPlaylists = nil
 	m.app.SearchArtists = nil
 	m.app.ShowingSearchResult = false
+	m.app.SearchLoading = false
 	m.app.ViewingSettings = false
 	if m.ready {
 		m.app.ActivePanel = app.ActivePanelMain
@@ -997,6 +1023,8 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		m.app.IsSearching = false
+		m.app.SearchLoading = false
+		m.activeSearchID = 0
 		m.app.ViewingSettings = false
 		m.app.ActivePanel = app.ActivePanelNavigation
 		m.app.StatusMessage = "Library"
@@ -1008,8 +1036,7 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 			m.app.StatusMessage = "Search query is empty"
 			return nil
 		}
-		m.app.StatusMessage = fmt.Sprintf("Searching for %q...", query)
-		return searchCmd(m.loader, query)
+		return m.startSearch(query)
 	case "backspace":
 		m.app.SearchQuery = trimLastRune(m.app.SearchQuery)
 		return nil
@@ -1018,6 +1045,34 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 		m.app.SearchQuery += msg.Text
 	}
 	return nil
+}
+
+func (m *Model) startSearch(query string) tea.Cmd {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		m.app.IsSearching = false
+		m.app.SearchLoading = false
+		m.app.StatusMessage = "Search query is empty"
+		return nil
+	}
+	m.nextSearchID++
+	m.activeSearchID = m.nextSearchID
+	m.app.IsSearching = false
+	m.app.SearchLoading = true
+	m.app.SearchQuery = query
+	m.app.ViewingSettings = false
+	m.app.ActivePanel = app.ActivePanelMain
+	m.app.CurrentPlaylistID = stringPtr("__search__")
+	if !m.app.ShowingSearchResult {
+		m.app.CurrentTracks = nil
+		m.app.SearchPlaylists = nil
+		m.app.SearchArtists = nil
+		m.app.SearchCategory = app.SearchCategoryTracks
+		m.app.MainState.Select(intPtr(0))
+	}
+	m.app.ShowingSearchResult = true
+	m.app.StatusMessage = fmt.Sprintf("Searching for %q...", query)
+	return tea.Batch(searchCmd(m.loader, m.activeSearchID, query), loadingTickCmd())
 }
 
 func (m Model) listenMediaControlCmd() tea.Cmd {
@@ -1648,6 +1703,8 @@ func (m Model) renderMain(width, height int) string {
 	lines := []string{}
 	if m.app.ViewingSettings {
 		lines = append(lines, m.renderSettingsRows()...)
+	} else if m.app.SearchLoading {
+		lines = append(lines, m.renderSearchLoading(width, height)...)
 	} else if m.app.ShowingSearchResult {
 		lines = append(lines, renderSearchTabs(m.app.SearchCategory))
 		lines = append(lines, "")
@@ -1724,6 +1781,31 @@ func (m Model) renderMain(width, height int) string {
 	}
 
 	return m.renderPanel(title, strings.Join(lines, "\n"), m.app.ActivePanel == app.ActivePanelMain || m.app.ActivePanel == app.ActivePanelSearch, width, height)
+}
+
+func (m Model) renderSearchLoading(width, height int) []string {
+	frame := searchLoadingFrames[m.loadingFrame%len(searchLoadingFrames)]
+	contentWidth := max(1, width-4)
+	lines := []string{
+		"",
+		centerText(fmt.Sprintf("%s %s", paint(frame, activePalette.Aqua, ""), paint("searching", activePalette.TextMuted, "")), contentWidth),
+		"",
+	}
+	status := fmt.Sprintf("Searching for %q", truncate(m.app.SearchQuery, max(8, contentWidth-18)))
+	lines = append(lines, centerText(paint(status, activePalette.TextMuted, ""), contentWidth))
+	if len(lines) >= height {
+		return lines[:height]
+	}
+	topPad := max(0, (height-len(lines))/2)
+	padded := make([]string, 0, min(height, len(lines)+topPad))
+	for range topPad {
+		padded = append(padded, "")
+	}
+	padded = append(padded, lines...)
+	if len(padded) > height {
+		return padded[:height]
+	}
+	return padded
 }
 
 func (m Model) renderQueue(width, height int) string {
@@ -1836,7 +1918,7 @@ func (m Model) renderSearchBar() string {
 		query = paint("_", activePalette.Aqua, "")
 	}
 	label := paint(" Search ", activePalette.TextMuted, "")
-	if m.app.IsSearching {
+	if m.app.IsSearching || m.app.SearchLoading {
 		label = paint(" Search ", activePalette.Orange, "")
 	}
 	help := paint("tab switch | hjkl move | enter select | space play/pause | / search", activePalette.TextMuted, "")
@@ -2202,16 +2284,19 @@ func loadPlaylistCmd(loader Loader, id string, title string) tea.Cmd {
 	}
 }
 
-func searchCmd(loader Loader, query string) tea.Cmd {
+func searchCmd(loader Loader, requestID int, query string) tea.Cmd {
 	if loader == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		results, err := loader.Search(context.Background(), query)
+		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+		defer cancel()
+		results, err := loader.Search(ctx, query)
 		if err != nil {
-			return loadFailedMsg{message: fmt.Sprintf("Search error: %v", err)}
+			return searchFailedMsg{requestID: requestID, message: fmt.Sprintf("Search error: %v", err)}
 		}
 		return searchLoadedMsg{
+			requestID: requestID,
 			query:     query,
 			tracks:    results.Tracks,
 			playlists: results.Playlists,
