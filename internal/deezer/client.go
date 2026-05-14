@@ -23,6 +23,9 @@ const (
 	defaultMediaURL   = "https://media.deezer.com/v1/get_url"
 	defaultFlowAPIURL = "https://api.deezer.com"
 	defaultUserAgent  = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+	searchYearEnrichmentLimit   = 10
+	searchYearEnrichmentTimeout = 2 * time.Second
 )
 
 type AudioQuality string
@@ -567,7 +570,7 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 		[]string{"results", "SONGS", "data"},
 		[]string{"results", "tracks", "data"},
 	)
-	enrichCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	enrichCtx, cancel := context.WithTimeout(ctx, searchYearEnrichmentTimeout)
 	defer cancel()
 	results.Tracks = c.enrichSearchTrackYears(enrichCtx, results.Tracks)
 
@@ -616,7 +619,8 @@ func (c *Client) enrichSearchTrackYears(ctx context.Context, tracks []Track) []T
 
 	var wg sync.WaitGroup
 	jobs := make(chan int)
-	workers := min(8, len(out))
+	enrichCount := min(searchYearEnrichmentLimit, len(out))
+	workers := min(4, enrichCount)
 	for range workers {
 		wg.Add(1)
 		go func() {
@@ -636,7 +640,7 @@ func (c *Client) enrichSearchTrackYears(ctx context.Context, tracks []Track) []T
 			}
 		}()
 	}
-	for i := range out {
+	for i := 0; i < enrichCount; i++ {
 		select {
 		case <-ctx.Done():
 			close(jobs)

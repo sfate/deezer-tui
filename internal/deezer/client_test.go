@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -272,6 +273,64 @@ func TestFetchSearchResultsEnrichesMissingYearFromTrackAPI(t *testing.T) {
 	}
 	if results.Tracks[0].Year != "2020" || results.Tracks[0].Album != "API Album" {
 		t.Fatalf("expected enriched album/year, got %#v", results.Tracks[0])
+	}
+}
+
+func TestFetchSearchResultsLimitsTrackAPIYearEnrichment(t *testing.T) {
+	var trackAPIRequests int32
+	tracks := make([]map[string]any, searchYearEnrichmentLimit+2)
+	for i := range tracks {
+		tracks[i] = map[string]any{
+			"SNG_ID":    i + 1,
+			"SNG_TITLE": "Song",
+			"ART_NAME":  "Artist",
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/track/") {
+			atomic.AddInt32(&trackAPIRequests, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"release_date": "2020-05-15",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": map[string]any{
+				"TRACK": map[string]any{
+					"data": tracks,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-arl", Options{
+		GatewayURL:     server.URL,
+		MediaURL:       server.URL,
+		FlowAPIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	client.apiToken = "api-456"
+	client.sessionID = "sid-123"
+
+	results, err := client.FetchSearchResults(context.Background(), "query")
+	if err != nil {
+		t.Fatalf("fetch search results: %v", err)
+	}
+	if len(results.Tracks) != len(tracks) {
+		t.Fatalf("expected %d tracks, got %d", len(tracks), len(results.Tracks))
+	}
+	if got := atomic.LoadInt32(&trackAPIRequests); got != searchYearEnrichmentLimit {
+		t.Fatalf("expected %d track API requests, got %d", searchYearEnrichmentLimit, got)
+	}
+	if results.Tracks[searchYearEnrichmentLimit-1].Year != "2020" {
+		t.Fatal("expected last enriched track to have a year")
+	}
+	if results.Tracks[searchYearEnrichmentLimit].Year != "" {
+		t.Fatal("expected tracks beyond enrichment limit to stay unenriched")
 	}
 }
 

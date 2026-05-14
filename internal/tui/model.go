@@ -290,7 +290,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		return m, nil
 	case loadingTickMsg:
-		if !m.ready || m.app.SearchLoading {
+		if m.app.SearchLoading {
+			m.loadingFrame = (m.loadingFrame + 1) % len(searchLoadingFrames)
+			return m, loadingTickCmd()
+		}
+		if !m.ready {
 			m.loadingFrame = (m.loadingFrame + 1) % len(loadingHeartFrames)
 			return m, loadingTickCmd()
 		}
@@ -1055,6 +1059,13 @@ func (m *Model) startSearch(query string) tea.Cmd {
 		m.app.StatusMessage = "Search query is empty"
 		return nil
 	}
+	if m.loader == nil {
+		m.app.IsSearching = false
+		m.app.SearchLoading = false
+		m.activeSearchID = 0
+		m.app.StatusMessage = "Search unavailable: Deezer loader is not configured"
+		return nil
+	}
 	m.nextSearchID++
 	m.activeSearchID = m.nextSearchID
 	m.app.IsSearching = false
@@ -1063,13 +1074,11 @@ func (m *Model) startSearch(query string) tea.Cmd {
 	m.app.ViewingSettings = false
 	m.app.ActivePanel = app.ActivePanelMain
 	m.app.CurrentPlaylistID = stringPtr("__search__")
-	if !m.app.ShowingSearchResult {
-		m.app.CurrentTracks = nil
-		m.app.SearchPlaylists = nil
-		m.app.SearchArtists = nil
-		m.app.SearchCategory = app.SearchCategoryTracks
-		m.app.MainState.Select(intPtr(0))
-	}
+	m.app.CurrentTracks = nil
+	m.app.SearchPlaylists = nil
+	m.app.SearchArtists = nil
+	m.app.SearchCategory = app.SearchCategoryTracks
+	m.app.MainState.Select(intPtr(0))
 	m.app.ShowingSearchResult = true
 	m.app.StatusMessage = fmt.Sprintf("Searching for %q...", query)
 	return tea.Batch(searchCmd(m.loader, m.activeSearchID, query), loadingTickCmd())

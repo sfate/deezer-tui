@@ -1655,6 +1655,69 @@ func TestEnterSearchStartsLoadingAndLeavesInputMode(t *testing.T) {
 	}
 }
 
+func TestStartSearchWithoutLoaderDoesNotEnterLoadingState(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.app.IsSearching = true
+	model.app.SearchQuery = "artist"
+
+	cmd := model.startSearch("artist")
+
+	if cmd != nil {
+		t.Fatal("did not expect a search command without a loader")
+	}
+	if model.app.IsSearching {
+		t.Fatal("expected search input mode to close")
+	}
+	if model.app.SearchLoading {
+		t.Fatal("did not expect search loading without a loader")
+	}
+	if !strings.Contains(model.app.StatusMessage, "Search unavailable") {
+		t.Fatalf("expected unavailable status, got %q", model.app.StatusMessage)
+	}
+}
+
+func TestStartSearchClearsStaleSearchResults(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ShowingSearchResult = true
+	model.app.SearchCategory = app.SearchCategoryPlaylists
+	model.app.CurrentTracks = []app.Track{{ID: "old-track", Title: "Old", Artist: "A"}}
+	model.app.SearchPlaylists = []app.Playlist{{ID: "old-playlist", Title: "Old Playlist"}}
+	model.app.SearchArtists = []app.Artist{{ID: "old-artist", Name: "Old Artist"}}
+	model.app.MainState.Select(intPtr(4))
+
+	cmd := model.startSearch("new")
+
+	if cmd == nil {
+		t.Fatal("expected search command")
+	}
+	if len(model.app.CurrentTracks) != 0 || len(model.app.SearchPlaylists) != 0 || len(model.app.SearchArtists) != 0 {
+		t.Fatalf("expected stale results to be cleared, got tracks=%d playlists=%d artists=%d", len(model.app.CurrentTracks), len(model.app.SearchPlaylists), len(model.app.SearchArtists))
+	}
+	if model.app.SearchCategory != app.SearchCategoryTracks {
+		t.Fatalf("expected search category to reset to tracks, got %v", model.app.SearchCategory)
+	}
+	if selected := derefOrZero(model.app.MainState.Selected()); selected != 0 {
+		t.Fatalf("expected selection reset to 0, got %d", selected)
+	}
+}
+
+func TestSearchLoadingTickUsesSearchFrameCount(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.ready = true
+	model.app.SearchLoading = true
+	model.loadingFrame = len(loadingHeartFrames) - 1
+
+	nextModel, cmd := model.Update(loadingTickMsg{})
+	updated := nextModel.(Model)
+
+	if cmd == nil {
+		t.Fatal("expected loading tick to continue")
+	}
+	if updated.loadingFrame != len(loadingHeartFrames) {
+		t.Fatalf("expected search frame counter to advance past heart frame count, got %d", updated.loadingFrame)
+	}
+}
+
 func TestStaleSearchResultsAreIgnored(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 
