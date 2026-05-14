@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -566,6 +567,7 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 		[]string{"results", "SONGS", "data"},
 		[]string{"results", "tracks", "data"},
 	)
+	results.Tracks = c.enrichSearchTrackYears(ctx, results.Tracks)
 
 	playlists := getArrayPathCandidates(response,
 		[]string{"results", "PLAYLIST", "data"},
@@ -600,6 +602,80 @@ func (c *Client) FetchSearchResults(ctx context.Context, query string) (SearchRe
 	}
 
 	return results, nil
+}
+
+func (c *Client) enrichSearchTrackYears(ctx context.Context, tracks []Track) []Track {
+	if len(tracks) == 0 {
+		return tracks
+	}
+
+	out := make([]Track, len(tracks))
+	copy(out, tracks)
+
+	var wg sync.WaitGroup
+	jobs := make(chan int)
+	workers := min(8, len(out))
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if strings.TrimSpace(out[idx].Year) != "" {
+					continue
+				}
+				album, year, ok := c.fetchTrackAlbumYear(ctx, out[idx].ID)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(out[idx].Album) == "" {
+					out[idx].Album = album
+				}
+				out[idx].Year = year
+			}
+		}()
+	}
+	for i := range out {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return out
+		case jobs <- i:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return out
+}
+
+func (c *Client) fetchTrackAlbumYear(ctx context.Context, trackID string) (string, string, bool) {
+	if strings.TrimSpace(trackID) == "" {
+		return "", "", false
+	}
+	trackURL := fmt.Sprintf("%s/track/%s", c.flowAPIBaseURL, url.PathEscape(trackID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, trackURL, nil)
+	if err != nil {
+		return "", "", false
+	}
+	c.applyHeaders(req, true)
+
+	var response map[string]any
+	raw, err := c.doJSON(req, &response)
+	if err != nil {
+		c.writeDebugDump("search_track_year_error_"+sanitizeDebugFilePart(trackID)+".json", fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return "", "", false
+	}
+	c.writeDebugDump("search_track_year_"+sanitizeDebugFilePart(trackID)+".json", raw)
+
+	album := firstNonEmptyString(
+		getString(response, "album_title"),
+		getString(getMap(response, "album"), "title"),
+	)
+	year := parseTrackYear(response)
+	if year == "" {
+		return album, "", false
+	}
+	return album, year, true
 }
 
 func (c *Client) FetchHomeTracks(ctx context.Context) ([]Track, error) {
@@ -882,6 +958,27 @@ func (c *Client) writeDebugDump(fileName, raw string) {
 	_ = os.WriteFile(filepath.Join(base, fileName), []byte(raw), 0o644)
 }
 
+func sanitizeDebugFilePart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 func appendUniqueTracks(out *[]Track, seen map[string]struct{}, tracks []Track, limit int) {
 	for _, track := range tracks {
 		if len(*out) >= limit {
@@ -998,13 +1095,27 @@ func parseTrackAddedAtMS(item map[string]any) *int64 {
 }
 
 func parseTrackYear(item map[string]any) string {
-	for _, key := range []string{"YEAR", "year", "PHYSICAL_RELEASE_DATE", "DIGITAL_RELEASE_DATE", "RELEASE_DATE", "release_date", "DATE", "date"} {
+	for _, key := range []string{
+		"YEAR", "year",
+		"PHYSICAL_RELEASE_DATE", "physical_release_date",
+		"DIGITAL_RELEASE_DATE", "digital_release_date",
+		"ORIGINAL_RELEASE_DATE", "original_release_date",
+		"RELEASE_DATE", "release_date",
+		"DATE_RELEASE", "date_release",
+		"ALB_RELEASE_DATE", "alb_release_date",
+		"ALBUM_RELEASE_DATE", "album_release_date",
+	} {
 		if year := extractYear(item[key]); year != "" {
 			return year
 		}
 	}
-	if year := extractYear(getMap(item, "album")["release_date"]); year != "" {
-		return year
+	for _, albumKey := range []string{"album", "ALBUM"} {
+		album := getMap(item, albumKey)
+		for _, key := range []string{"release_date", "RELEASE_DATE", "date_release", "DATE_RELEASE"} {
+			if year := extractYear(album[key]); year != "" {
+				return year
+			}
+		}
 	}
 	return ""
 }
@@ -1019,7 +1130,7 @@ func extractYear(raw any) string {
 		value = strings.TrimSpace(value)
 		if len(value) >= 4 {
 			year := value[:4]
-			if _, err := strconv.Atoi(year); err == nil {
+			if n, err := strconv.Atoi(year); err == nil && n >= 1000 {
 				return year
 			}
 		}

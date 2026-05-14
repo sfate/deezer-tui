@@ -1957,6 +1957,27 @@ func TestSearchTrackResultsShowAlbumAndYearColumns(t *testing.T) {
 	}
 }
 
+func TestSearchTrackResultsUseAvailablePanelWidth(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ShowingSearchResult = true
+	model.app.SearchCategory = app.SearchCategoryTracks
+	model.app.CurrentTracks = []app.Track{
+		{
+			ID:     "1",
+			Title:  "A Long Search Result Title That Needs Extra Room",
+			Artist: "A Long Artist",
+			Album:  "A Long Album",
+			Year:   "2024",
+		},
+	}
+	model.app.ActivePanel = app.ActivePanelMain
+
+	view := model.renderMain(110, 12)
+	if !strings.Contains(view, "A Long Search Result Title That") {
+		t.Fatal("expected search track table to use wider panel space")
+	}
+}
+
 func TestEnterOnSearchTrackQueuesAllSearchTracksAtSelectedIndex(t *testing.T) {
 	runtime := &fakePlaybackRuntime{}
 	model := NewWithLoaderAndRuntime(config.Default(), &fakeLoader{}, runtime)

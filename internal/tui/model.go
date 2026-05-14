@@ -1654,20 +1654,15 @@ func (m Model) renderMain(width, height int) string {
 		selected := derefOrZero(m.app.MainState.Selected())
 		switch m.app.SearchCategory {
 		case app.SearchCategoryTracks:
-			lines = append(lines, tableHeader(" #  Title                       Artist          Album           Year", activePalette.Orange))
-			lines = append(lines, separatorLine(68, activePalette.Border))
+			trackColumns := searchTrackColumns(max(12, width-2))
+			lines = append(lines, tableHeader(formatSearchTrackHeader(trackColumns), activePalette.Orange))
+			lines = append(lines, separatorLine(max(12, width-2), activePalette.Border))
 			visibleRows := max(0, height-2-len(lines))
 			start := scrollStart(selected, len(m.app.CurrentTracks), visibleRows, 0)
 			end := min(len(m.app.CurrentTracks), start+visibleRows)
 			for i := start; i < end; i++ {
 				track := m.app.CurrentTracks[i]
-				label := fmt.Sprintf(" %02d %-27s %-15s %-15s %s",
-					i+1,
-					truncate(track.Title, 27),
-					truncate(track.Artist, 15),
-					truncate(emptyFallback(track.Album, "-"), 15),
-					truncate(emptyFallback(track.Year, "-"), 4),
-				)
+				label := formatSearchTrackRow(i+1, track, trackColumns)
 				lines = append(lines, trackRow(label, selected == i, activePalette.Aqua))
 			}
 			if len(m.app.CurrentTracks) == 0 {
@@ -2360,6 +2355,52 @@ func formatQueue(tracks []app.Track) []string {
 		queue = append(queue, track.Title+" - "+track.Artist)
 	}
 	return queue
+}
+
+type searchTrackColumnWidths struct {
+	title  int
+	artist int
+	album  int
+}
+
+func searchTrackColumns(contentWidth int) searchTrackColumnWidths {
+	available := max(30, contentWidth-12)
+	title := max(12, available*45/100)
+	artist := max(8, available*25/100)
+	album := max(8, available-title-artist)
+	if total := title + artist + album; total > available {
+		overflow := total - available
+		for overflow > 0 && title > 12 {
+			title--
+			overflow--
+		}
+		for overflow > 0 && album > 8 {
+			album--
+			overflow--
+		}
+		for overflow > 0 && artist > 8 {
+			artist--
+			overflow--
+		}
+	}
+	return searchTrackColumnWidths{title: title, artist: artist, album: album}
+}
+
+func formatSearchTrackHeader(widths searchTrackColumnWidths) string {
+	return fmt.Sprintf(" #  %-*s %-*s %-*s Year", widths.title, "Title", widths.artist, "Artist", widths.album, "Album")
+}
+
+func formatSearchTrackRow(index int, track app.Track, widths searchTrackColumnWidths) string {
+	return fmt.Sprintf(" %02d %-*s %-*s %-*s %s",
+		index,
+		widths.title,
+		truncate(track.Title, widths.title),
+		widths.artist,
+		truncate(track.Artist, widths.artist),
+		widths.album,
+		truncate(emptyFallback(track.Album, "-"), widths.album),
+		truncate(emptyFallback(track.Year, "-"), 4),
+	)
 }
 
 func emptyFallback(value, fallback string) string {
