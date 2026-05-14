@@ -483,7 +483,7 @@ func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
 
 func TestSettingsDisplayPersists(t *testing.T) {
 	cfg := config.Default()
-	cfg.DisplayEnabled = true
+	cfg.DisplayMode = config.DisplayModeEqualizer
 	model := NewWithLoader(cfg, &fakeLoader{})
 	var saved []config.Config
 	model.saveConfig = func(cfg config.Config) error {
@@ -496,11 +496,11 @@ func TestSettingsDisplayPersists(t *testing.T) {
 
 	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	updated := nextModel.(Model)
-	if updated.app.Config.DisplayEnabled {
-		t.Fatal("expected display setting to be disabled")
+	if updated.app.Config.DisplayMode != config.DisplayModeOff {
+		t.Fatalf("expected display mode to cycle to off, got %s", updated.app.Config.DisplayMode)
 	}
-	if len(saved) != 1 || saved[0].DisplayEnabled {
-		t.Fatalf("expected disabled display setting to be persisted, got %#v", saved)
+	if len(saved) != 1 || saved[0].DisplayMode != config.DisplayModeOff {
+		t.Fatalf("expected off display mode to be persisted, got %#v", saved)
 	}
 }
 
@@ -1517,21 +1517,63 @@ func TestStatusAreaRendersDisplayPanelWhenEnabled(t *testing.T) {
 	if !strings.Contains(view, "Status") || !strings.Contains(view, "Display") {
 		t.Fatal("expected status and display panels")
 	}
-	if !strings.Contains(view, "█") {
-		t.Fatal("expected visualizer bars in display panel")
+	display := model.renderDisplayBody(40, 9)
+	if !strings.ContainsAny(display, "█▓▒") {
+		t.Fatal("expected solid equalizer output in display panel")
+	}
+	if !strings.Contains(display, "\x1b[") {
+		t.Fatal("expected colored display output")
 	}
 }
 
 func TestStatusAreaHidesDisplayPanelWhenDisabled(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.width = 120
+	model.app.Config.DisplayMode = config.DisplayModeOff
 	model.app.Config.DisplayEnabled = false
 	model.app.IsPlaying = true
 	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
 
 	view := model.renderStatusArea()
-	if strings.Contains(view, "Display") || strings.Contains(view, "█") {
-		t.Fatal("did not expect display panel or visualizer bars")
+	if strings.Contains(view, "Display") {
+		t.Fatal("did not expect display panel")
+	}
+}
+
+func TestDisplayPanelRendersModes(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 3, 5, 7, 8, 6, 4, 2}
+
+	model.app.Config.DisplayMode = config.DisplayModeEqualizer
+	if display := model.renderDisplayBody(40, 9); !strings.ContainsAny(display, "█▓▒") || !strings.Contains(display, "\x1b[") {
+		t.Fatal("expected colored equalizer glyphs")
+	}
+}
+
+func TestEqualizerPeaksRiseAndFall(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+
+	model.updateVisualizerPeaks([]uint8{8, 4})
+	if len(model.visualizerPeaks) != 2 || model.visualizerPeaks[0] != 1 {
+		t.Fatalf("expected peak to rise to current level, got %#v", model.visualizerPeaks)
+	}
+
+	model.updateVisualizerPeaks([]uint8{1, 4})
+	if model.visualizerPeaks[0] >= 1 || model.visualizerPeaks[0] <= float64(1)/8 {
+		t.Fatalf("expected peak to fall slowly above current level, got %#v", model.visualizerPeaks)
+	}
+
+	model.updateVisualizerPeaks([]uint8{8, 4})
+	if model.visualizerPeaks[0] != 1 {
+		t.Fatalf("expected peak to reset when bar reaches it, got %#v", model.visualizerPeaks)
+	}
+}
+
+func TestEqualizerRendersPeakCaps(t *testing.T) {
+	display := renderEqualizerDisplay(24, 8, []uint8{1, 2, 3, 2}, []float64{0.9, 0.75, 0.6, 0.5})
+	if !strings.Contains(display, "▀") {
+		t.Fatal("expected falling peak cap glyph")
 	}
 }
 
@@ -1542,7 +1584,7 @@ func TestStatusLineDoesNotIncludeVisualizer(t *testing.T) {
 	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
 
 	view := model.renderStatusLine()
-	if strings.Contains(view, "▁") || strings.Contains(view, "█") {
+	if strings.Contains(view, "Display") {
 		t.Fatal("did not expect visualizer inside status panel")
 	}
 }
