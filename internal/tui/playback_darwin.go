@@ -78,15 +78,18 @@ func (r *defaultPlayerRuntime) UpdateMediaControl(state MediaControlState) {
 }
 
 type darwinPlaybackSession struct {
-	mu       sync.Mutex
-	file     string
-	paused   bool
-	stopped  bool
-	volume   float32
-	done     chan error
-	token    int
-	manager  *darwinHelperManager
-	finished bool
+	mu              sync.Mutex
+	file            string
+	paused          bool
+	stopped         bool
+	volume          float32
+	done            chan error
+	token           int
+	manager         *darwinHelperManager
+	finished        bool
+	visualizerStop  chan struct{}
+	visualizerPause chan bool
+	visualizerOnce  sync.Once
 }
 
 func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPrebufferStore, trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) {
@@ -146,6 +149,24 @@ func (s *darwinPlaybackSession) run(client *deezer.Client, prebuffer *darwinPreb
 		}
 		handler.OnPlaybackProgress(initialMS, total)
 	}
+	if handler.OnAudioBands != nil {
+		stop := make(chan struct{})
+		pause := make(chan bool, 1)
+		s.mu.Lock()
+		startVisualizer := !s.stopped
+		if startVisualizer {
+			s.visualizerStop = stop
+			s.visualizerPause = pause
+			if s.paused {
+				pause <- true
+			}
+		}
+		s.mu.Unlock()
+		if startVisualizer {
+			go player.StreamVisualizerFile(s.file, quality, initialMS, stop, pause, handler.OnAudioBands)
+			defer s.stopVisualizer()
+		}
+	}
 
 	err = <-finishCh
 	s.mu.Lock()
@@ -173,6 +194,7 @@ func (s *darwinPlaybackSession) Pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = true
+	s.sendVisualizerPauseLocked(true)
 	if s.token != 0 {
 		_ = s.manager.pause(s.token)
 	}
@@ -182,6 +204,7 @@ func (s *darwinPlaybackSession) Resume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = false
+	s.sendVisualizerPauseLocked(false)
 	if s.token != 0 {
 		_ = s.manager.resume(s.token)
 	}
@@ -191,11 +214,42 @@ func (s *darwinPlaybackSession) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	s.stopVisualizerLocked()
 	if s.finished {
 		return
 	}
 	if s.token != 0 {
 		_ = s.manager.stop(s.token)
+	}
+}
+
+func (s *darwinPlaybackSession) stopVisualizer() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopVisualizerLocked()
+}
+
+func (s *darwinPlaybackSession) stopVisualizerLocked() {
+	if s.visualizerStop == nil {
+		return
+	}
+	s.visualizerOnce.Do(func() {
+		close(s.visualizerStop)
+	})
+}
+
+func (s *darwinPlaybackSession) sendVisualizerPauseLocked(paused bool) {
+	if s.visualizerPause == nil {
+		return
+	}
+	select {
+	case s.visualizerPause <- paused:
+	default:
+		select {
+		case <-s.visualizerPause:
+		default:
+		}
+		s.visualizerPause <- paused
 	}
 }
 

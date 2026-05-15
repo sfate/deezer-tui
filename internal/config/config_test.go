@@ -22,3 +22,10 @@ func TestSaveWritesConfigOwnerOnly(t *testing.T) {
 		t.Fatalf("expected config mode 0600, got %04o", got)
 	}
 }
+
+func TestNormalizeDisplayModeFallsBackToOffForUnknownMode(t *testing.T) {
+	got := NormalizeDisplayMode(DisplayMode("spectrum"), true)
+	if got != DisplayModeOff {
+		t.Fatalf("expected unknown display mode to fall back to off, got %q", got)
+	}
+}

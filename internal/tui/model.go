@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -93,6 +94,11 @@ type playbackProgressMsg struct {
 	totalMS   uint64
 }
 
+type playbackVisualizerMsg struct {
+	playID int
+	bands  []uint8
+}
+
 type playbackErrorMsg struct {
 	playID int
 	err    error
@@ -162,6 +168,8 @@ type Model struct {
 	activeSearchID    int
 	prebufferStatuses map[string]PrebufferStatus
 	prebufferReady    []string
+	visualizerBands   []uint8
+	visualizerPeaks   []float64
 }
 
 func New() Model {
@@ -170,6 +178,8 @@ func New() Model {
 
 func NewWithConfig(cfg config.Config) Model {
 	cfg.Theme = colorscheme.Normalize(cfg.Theme)
+	cfg.DisplayMode = config.NormalizeDisplayMode(cfg.DisplayMode, cfg.DisplayEnabled)
+	cfg.DisplayEnabled = cfg.DisplayMode != config.DisplayModeOff
 	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 
@@ -201,6 +211,8 @@ func NewWithConfig(cfg config.Config) Model {
 
 func NewWithLoader(cfg config.Config, loader Loader) Model {
 	cfg.Theme = colorscheme.Normalize(cfg.Theme)
+	cfg.DisplayMode = config.NormalizeDisplayMode(cfg.DisplayMode, cfg.DisplayEnabled)
+	cfg.DisplayEnabled = cfg.DisplayMode != config.DisplayModeOff
 	applyTheme(cfg.Theme)
 	state := app.New(cfg)
 	state.StatusMessage = "Loading Deezer library..."
@@ -359,6 +371,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressSince = time.Time{}
 		m.app.AutoTransitionArmed = false
 		m.app.StatusMessage = "Buffering..."
+		m.visualizerBands = nil
+		m.visualizerPeaks = nil
 		if m.pauseRequested {
 			m.session.Pause()
 			m.app.IsPlaying = false
@@ -408,6 +422,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressBaseMS = msg.initialMS
 		m.progressSince = time.Now()
 		m.progressActive = m.app.IsPlaying
+		m.visualizerBands = nil
+		m.visualizerPeaks = nil
 		if m.app.IsPlaying {
 			m.app.StatusMessage = "Playing"
 		}
@@ -469,6 +485,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressActive = false
 		m.bufferingPercent = nil
 		m.progressSince = time.Time{}
+		m.visualizerBands = nil
+		m.visualizerPeaks = nil
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			return m, m.retryPlaybackAfterError(msg.err)
 		}
@@ -502,6 +520,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(playbackTickCmd(), crossfadeCmd)
 		}
 		return m, playbackTickCmd()
+	case playbackVisualizerMsg:
+		if msg.playID != m.currentPlayID || !m.app.IsPlaying || len(msg.bands) == 0 {
+			return m, listenPlaybackEventCmd(m.playbackEvents)
+		}
+		m.visualizerBands = append(m.visualizerBands[:0], msg.bands...)
+		m.updateVisualizerPeaks(msg.bands)
+		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case scheduledPlaybackMsg:
 		if msg.requestID != m.playbackRequest || strings.TrimSpace(m.pendingTrackID) == "" {
 			return m, nil
@@ -623,7 +648,7 @@ func (m Model) View() tea.View {
 		m.renderMain(mainWidth, contentHeight),
 	)
 	footer := m.renderPlaybar()
-	status := m.renderStatusLine()
+	status := m.renderStatusArea()
 
 	content := strings.Join([]string{
 		header,
@@ -689,6 +714,8 @@ func (m *Model) togglePlayPause() {
 		m.progressSince = time.Time{}
 		m.app.IsPlaying = false
 		m.app.StatusMessage = "Paused"
+		m.visualizerBands = nil
+		m.visualizerPeaks = nil
 		m.syncMediaControl()
 		return
 	}
@@ -1226,6 +1253,11 @@ func (m *Model) adjustSelectedSetting(direction int) {
 		m.app.Config.CrossfadeDurationMS = nextCrossfadeDuration(m.app.Config.CrossfadeDurationMS, direction)
 		m.app.StatusMessage = fmt.Sprintf("Crossfade duration: %dms", m.app.Config.CrossfadeDurationMS)
 		m.persistConfig()
+	case 5:
+		m.app.Config.DisplayMode = nextDisplayMode(m.app.Config.DisplayMode, direction)
+		m.app.Config.DisplayEnabled = m.app.Config.DisplayMode != config.DisplayModeOff
+		m.app.StatusMessage = fmt.Sprintf("Display: %s", displayModeLabel(m.app.Config.DisplayMode))
+		m.persistConfig()
 	}
 }
 
@@ -1272,6 +1304,8 @@ func (m *Model) scheduleTrackPlayback(trackID string, quality deezer.AudioQualit
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
 	m.artworkURL = ""
+	m.visualizerBands = nil
+	m.visualizerPeaks = nil
 	if resetRetries {
 		m.playbackRetries = 0
 	}
@@ -1314,6 +1348,8 @@ func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality dee
 	m.app.NowPlaying = nil
 	m.artworkANSI = ""
 	m.artworkURL = ""
+	m.visualizerBands = nil
+	m.visualizerPeaks = nil
 	if resetRetries {
 		m.playbackRetries = 0
 	}
@@ -1323,8 +1359,9 @@ func (m *Model) startTrackPlaybackWithQualityAndSeek(trackID string, quality dee
 	playID := m.nextPlaybackID
 	m.app.IsPlaying = true
 	m.app.StatusMessage = "Starting playback..."
+	enableVisualizer := displayMode(m.app.Config) != config.DisplayModeOff
 	return tea.Batch(
-		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, seekMS, m.playbackEvents),
+		startPlaybackCmdWithEvents(playID, trackID, m.runtime, quality, seekMS, enableVisualizer, m.playbackEvents),
 		m.maybeLoadMoreFlowForTail(),
 	)
 }
@@ -1628,6 +1665,24 @@ func (m Model) hasLoadingPrebuffer() bool {
 		}
 	}
 	return false
+}
+
+func (m *Model) updateVisualizerPeaks(bands []uint8) {
+	if len(bands) == 0 {
+		return
+	}
+	if len(m.visualizerPeaks) != len(bands) {
+		m.visualizerPeaks = make([]float64, len(bands))
+	}
+	const peakFall = 0.035
+	for i, band := range bands {
+		level := float64(band) / 8
+		if level >= m.visualizerPeaks[i] {
+			m.visualizerPeaks[i] = level
+			continue
+		}
+		m.visualizerPeaks[i] = math.Max(level, m.visualizerPeaks[i]-peakFall)
+	}
 }
 
 func prebufferKey(trackID string, quality deezer.AudioQuality) string {
@@ -1966,26 +2021,43 @@ func (m Model) renderHeader() string {
 	return renderTripleLine(left, center, right, m.width)
 }
 
+func (m Model) renderStatusArea() string {
+	if displayMode(m.app.Config) == config.DisplayModeOff || m.width < 64 {
+		return m.renderStatusLine()
+	}
+	gap := 2
+	statusWidth := max(30, (m.width-gap)/2)
+	displayWidth := max(30, m.width-gap-statusWidth)
+	return joinColumns(
+		m.renderStatusPanel(statusWidth),
+		m.renderDisplayPanel(displayWidth),
+	)
+}
+
 func (m Model) renderStatusLine() string {
+	return m.renderStatusPanel(m.width)
+}
+
+func (m Model) renderStatusPanel(width int) string {
 	title := "Nothing playing"
 	artist := "-"
-	progress := renderProgress(0, 0, max(20, min(48, m.width-26)))
+	progress := renderProgress(0, 0, max(20, min(48, width-26)))
 	source := displayCollectionTitle(derefString(m.app.CurrentPlaylistID, "Browse"))
 	quality := "-"
 	elapsed := "00:00"
 	total := "00:00"
 	queueInfo := "-"
 	if m.app.NowPlaying != nil {
-		title = truncate(m.app.NowPlaying.Title, max(20, m.width-22))
-		artist = truncate(m.app.NowPlaying.Artist, max(20, m.width-22))
-		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, m.width-26)))
+		title = truncate(m.app.NowPlaying.Title, max(20, width-22))
+		artist = truncate(m.app.NowPlaying.Artist, max(20, width-22))
+		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, width-26)))
 		quality = qualityLabel(m.app.NowPlaying.Quality)
 		elapsed = formatClock(m.app.NowPlaying.CurrentMS)
 		total = formatClock(m.app.NowPlaying.TotalMS)
 	} else if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
 		track := m.app.QueueTracks[*m.app.QueueIndex]
-		title = truncate(track.Title, max(20, m.width-22))
-		artist = truncate(track.Artist, max(20, m.width-22))
+		title = truncate(track.Title, max(20, width-22))
+		artist = truncate(track.Artist, max(20, width-22))
 	}
 	if m.app.QueueIndex != nil && len(m.app.QueueTracks) > 0 {
 		queueInfo = fmt.Sprintf("%d/%d", *m.app.QueueIndex+1, len(m.app.QueueTracks))
@@ -2007,9 +2079,14 @@ func (m Model) renderStatusLine() string {
 	body := joinColumns(
 		" ",
 		m.renderArtworkSlot(art, 16, 9),
-		m.renderTextSlot(strings.Join(lines, "\n"), max(24, m.width-24), 9, 1, 1),
+		m.renderTextSlot(strings.Join(lines, "\n"), max(24, width-24), 9, 1, 1),
 	)
-	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, m.width, 11)
+	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, width, 11)
+}
+
+func (m Model) renderDisplayPanel(width int) string {
+	body := m.renderDisplayBody(max(1, width-2), 9)
+	return m.renderPanel("Display", body, displayMode(m.app.Config) != config.DisplayModeOff && len(m.visualizerBands) > 0, width, 11)
 }
 
 func (m Model) renderPanel(title, body string, active bool, width, height int) string {
@@ -2160,7 +2237,7 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
-func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, events chan tea.Msg) tea.Cmd {
+func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, enableVisualizer bool, events chan tea.Msg) tea.Cmd {
 	if runtime == nil {
 		return nil
 	}
@@ -2178,6 +2255,15 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 			OnError: func(err error) {
 				events <- playbackErrorMsg{playID: playID, err: err}
 			},
+		}
+		if enableVisualizer {
+			handler.OnAudioBands = func(bands []uint8) {
+				copied := append([]uint8(nil), bands...)
+				select {
+				case events <- playbackVisualizerMsg{playID: playID, bands: copied}:
+				default:
+				}
+			}
 		}
 		session, err := runtime.Start(trackID, quality, seekMS, handler)
 		if err != nil {
@@ -2539,6 +2625,174 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 	return fmt.Sprintf("[%s%s] %s", filledBar, emptyBar, timing)
 }
 
+func (m Model) renderDisplayBody(width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	lines := make([]string, height)
+	mode := displayMode(m.app.Config)
+	if mode == config.DisplayModeOff || len(m.visualizerBands) == 0 {
+		for i := range lines {
+			lines[i] = strings.Repeat(" ", width)
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	return renderEqualizerDisplay(width, height, m.visualizerBands, m.visualizerPeaks)
+}
+
+func renderEqualizerDisplay(width, height int, bands []uint8, peaks []float64) string {
+	grid := blankDisplayGrid(width, height)
+	if len(bands) == 0 {
+		return displayGridString(grid)
+	}
+	bars := max(len(bands)*3, min(width, len(bands)*5))
+	gap := 1
+	barWidth := max(1, (width-(bars-1)*gap)/bars)
+	usedWidth := bars*barWidth + (bars-1)*gap
+	if usedWidth > width {
+		gap = 0
+		barWidth = max(1, width/bars)
+		usedWidth = bars * barWidth
+	}
+	leftPad := max(0, (width-usedWidth)/2)
+	for bar := 0; bar < bars; bar++ {
+		position := float64(bar) * float64(len(bands)-1) / math.Max(1, float64(bars-1))
+		level := interpolatedBandLevel(bands, position)
+		fill := int(math.Round(level * float64(height)))
+		peakLevel := interpolatedPeakLevel(peaks, position)
+		peakRow := height - 1 - int(math.Round(peakLevel*float64(height-1)))
+		x0 := leftPad + bar*(barWidth+gap)
+		for y := height - 1; y >= max(0, height-fill); y-- {
+			for x := x0; x < min(width, x0+barWidth); x++ {
+				grid[y][x] = displayCell{
+					glyph: equalizerGlyph(level, y, height),
+					color: equalizerColor(level, y, height),
+				}
+			}
+		}
+		if peakLevel > 0 && peakRow >= 0 && peakRow < height {
+			for x := x0; x < min(width, x0+barWidth); x++ {
+				grid[peakRow][x] = displayCell{glyph: "▀", color: activePalette.TextStrong}
+			}
+		}
+	}
+	return displayGridString(grid)
+}
+
+func equalizerGlyph(level float64, row, height int) string {
+	switch {
+	case level > 0.72 && row < height/3:
+		return "█"
+	case level > 0.42:
+		return "▓"
+	default:
+		return "▒"
+	}
+}
+
+func equalizerColor(level float64, row, height int) string {
+	switch {
+	case level > 0.78 && row < height/3:
+		return activePalette.Orange
+	case level > 0.55:
+		return activePalette.Yellow
+	case level > 0.32:
+		return activePalette.Aqua
+	default:
+		return activePalette.Green
+	}
+}
+
+func interpolatedBandLevel(bands []uint8, position float64) float64 {
+	if len(bands) == 0 {
+		return 0
+	}
+	if len(bands) == 1 {
+		return float64(bands[0]) / 8
+	}
+	if position < 0 {
+		position = 0
+	}
+	maxPosition := float64(len(bands) - 1)
+	if position > maxPosition {
+		position = maxPosition
+	}
+	left := int(math.Floor(position))
+	right := min(len(bands)-1, left+1)
+	weight := position - float64(left)
+	value := float64(bands[left])*(1-weight) + float64(bands[right])*weight
+	return value / 8
+}
+
+func interpolatedPeakLevel(peaks []float64, position float64) float64 {
+	if len(peaks) == 0 {
+		return 0
+	}
+	if len(peaks) == 1 {
+		return clampFloat64(peaks[0], 0, 1)
+	}
+	if position < 0 {
+		position = 0
+	}
+	maxPosition := float64(len(peaks) - 1)
+	if position > maxPosition {
+		position = maxPosition
+	}
+	left := int(math.Floor(position))
+	right := min(len(peaks)-1, left+1)
+	weight := position - float64(left)
+	value := peaks[left]*(1-weight) + peaks[right]*weight
+	return clampFloat64(value, 0, 1)
+}
+
+func clampFloat64(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+type displayCell struct {
+	glyph string
+	color string
+}
+
+func blankDisplayGrid(width, height int) [][]displayCell {
+	grid := make([][]displayCell, height)
+	for row := range grid {
+		grid[row] = make([]displayCell, width)
+	}
+	return grid
+}
+
+func displayGridString(grid [][]displayCell) string {
+	out := make([]string, len(grid))
+	for row := range grid {
+		var line strings.Builder
+		line.Grow(len(grid[row]))
+		for _, cell := range grid[row] {
+			if cell.glyph == "" {
+				line.WriteByte(' ')
+				continue
+			}
+			line.WriteString(paint(cell.glyph, cell.color, ""))
+		}
+		out[row] = line.String()
+	}
+	return strings.Join(out, "\n")
+}
+
+func displayMode(cfg config.Config) config.DisplayMode {
+	return config.NormalizeDisplayMode(cfg.DisplayMode, cfg.DisplayEnabled)
+}
+
 func formatClock(ms uint64) string {
 	seconds := ms / 1000
 	return fmt.Sprintf("%02d:%02d", seconds/60, seconds%60)
@@ -2733,6 +2987,36 @@ func nextCrossfadeDuration(current uint64, direction int) uint64 {
 	return presets[idx]
 }
 
+func nextDisplayMode(current config.DisplayMode, direction int) config.DisplayMode {
+	modes := []config.DisplayMode{
+		config.DisplayModeOff,
+		config.DisplayModeEqualizer,
+	}
+	current = config.NormalizeDisplayMode(current, true)
+	idx := 1
+	for i, mode := range modes {
+		if mode == current {
+			idx = i
+			break
+		}
+	}
+	if direction < 0 {
+		idx = (idx - 1 + len(modes)) % len(modes)
+	} else {
+		idx = (idx + 1) % len(modes)
+	}
+	return modes[idx]
+}
+
+func displayModeLabel(mode config.DisplayMode) string {
+	switch config.NormalizeDisplayMode(mode, true) {
+	case config.DisplayModeOff:
+		return "Off"
+	default:
+		return "Equalizer"
+	}
+}
+
 func onOff(v bool) string {
 	if v {
 		return "On"
@@ -2752,6 +3036,7 @@ func (m Model) renderSettingsRows() []string {
 		{label: "Quality", value: qualityLabel(m.app.Config.DefaultQuality), color: activePalette.Purple},
 		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: activePalette.Orange},
 		{label: "Duration", value: fmt.Sprintf("%dms", m.app.Config.CrossfadeDurationMS), color: activePalette.Yellow},
+		{label: "Display", value: displayModeLabel(m.app.Config.DisplayMode), color: activePalette.Aqua},
 	}
 	lines := make([]string, 0, len(rows))
 	for i, row := range rows {

@@ -33,7 +33,7 @@ type MediaClient interface {
 }
 
 type Backend interface {
-	Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error)
+	Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error)
 }
 
 type Controller interface {
@@ -47,6 +47,7 @@ type EventHandler struct {
 	OnTrackChanged      func(meta deezer.TrackMetadata, quality deezer.AudioQuality, initialMS uint64)
 	OnBufferingProgress func(percent uint8, stage BufferingStage)
 	OnPlaybackProgress  func(currentMS, totalMS uint64)
+	OnAudioBands        func([]uint8)
 	OnPlaybackStopped   func()
 	OnError             func(error)
 }
@@ -216,7 +217,7 @@ func runTrackPipeline(
 			return nil
 		}
 		started = true
-		controller, err := backend.Start(buffer, quality, func(playErr error) {
+		controller, err := backend.Start(buffer, quality, handler, func(playErr error) {
 			select {
 			case finishedCh <- playErr:
 			default:

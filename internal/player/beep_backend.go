@@ -39,7 +39,7 @@ func NewBeepBackend() *BeepBackend {
 	}
 }
 
-func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, onFinished func(error)) (Controller, error) {
+func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error) {
 	if err := b.ensureSpeaker(); err != nil {
 		return nil, err
 	}
@@ -53,13 +53,22 @@ func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, o
 	if format.SampleRate != b.targetSampleRate {
 		playback = beep.Resample(defaultResampleQuality, format.SampleRate, b.targetSampleRate, playback)
 	}
+	var visualizer *VisualizerStreamer
+	if handler.OnAudioBands != nil {
+		visualizer = &VisualizerStreamer{
+			Streamer:   playback,
+			SampleRate: b.targetSampleRate,
+			OnBands:    handler.OnAudioBands,
+		}
+		playback = visualizer
+	}
 
 	ctrl := &beep.Ctrl{Streamer: playback}
 	vol := &effects.Volume{Streamer: ctrl, Base: 2}
 	controller := &beepController{
 		ctrl:       ctrl,
 		volume:     vol,
-		closer:     streamer,
+		closer:     closeVisualizerStream{visualizer: visualizer, closer: streamer},
 		onFinished: onFinished,
 	}
 
@@ -95,6 +104,21 @@ type beepController struct {
 	sequence   beep.Streamer
 	onFinished func(error)
 	finished   atomic.Bool
+}
+
+type closeVisualizerStream struct {
+	visualizer *VisualizerStreamer
+	closer     io.Closer
+}
+
+func (c closeVisualizerStream) Close() error {
+	if c.visualizer != nil {
+		c.visualizer.Close()
+	}
+	if c.closer == nil {
+		return nil
+	}
+	return c.closer.Close()
 }
 
 func (c *beepController) Pause() {

@@ -86,6 +86,7 @@ type fakePlaybackRuntime struct {
 	started     []string
 	qualities   []deezer.AudioQuality
 	seeked      []uint64
+	handlers    []player.EventHandler
 	prebuffered [][]string
 	session     *fakePlaybackSession
 	startErr    error
@@ -93,10 +94,11 @@ type fakePlaybackRuntime struct {
 	mediaStates []MediaControlState
 }
 
-func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, _ player.EventHandler) (PlaybackSession, error) {
+func (f *fakePlaybackRuntime) Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error) {
 	f.started = append(f.started, trackID)
 	f.qualities = append(f.qualities, quality)
 	f.seeked = append(f.seeked, seekMS)
+	f.handlers = append(f.handlers, handler)
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -362,7 +364,7 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	model.app.SettingsState.Select(intPtr(0))
 
 	view := model.renderMain(80, 12)
-	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:"} {
+	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:", "Display:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected settings view to contain %q", want)
 		}
@@ -478,6 +480,29 @@ func TestSettingsQualityPersistsAndAffectsPlayback(t *testing.T) {
 	_ = nextModel.(Model)
 	if len(runtime.qualities) != 1 || runtime.qualities[0] != deezer.AudioQualityFlac {
 		t.Fatalf("expected playback to use FLAC quality, got %#v", runtime.qualities)
+	}
+}
+
+func TestSettingsDisplayPersists(t *testing.T) {
+	cfg := config.Default()
+	cfg.DisplayMode = config.DisplayModeEqualizer
+	model := NewWithLoader(cfg, &fakeLoader{})
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(5))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.Config.DisplayMode != config.DisplayModeOff {
+		t.Fatalf("expected display mode to cycle to off, got %s", updated.app.Config.DisplayMode)
+	}
+	if len(saved) != 1 || saved[0].DisplayMode != config.DisplayModeOff {
+		t.Fatalf("expected off display mode to be persisted, got %#v", saved)
 	}
 }
 
@@ -1481,6 +1506,128 @@ func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
 	view := model.renderStatusLine()
 	if !strings.Contains(view, "NO ART") || !strings.Contains(view, "+--------+") {
 		t.Fatal("expected default artwork placeholder")
+	}
+}
+
+func TestStatusAreaRendersDisplayPanelWhenEnabled(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusArea()
+	if !strings.Contains(view, "Status") || !strings.Contains(view, "Display") {
+		t.Fatal("expected status and display panels")
+	}
+	display := model.renderDisplayBody(40, 9)
+	if !strings.ContainsAny(display, "█▓▒") {
+		t.Fatal("expected solid equalizer output in display panel")
+	}
+	if !strings.Contains(display, "\x1b[") {
+		t.Fatal("expected colored display output")
+	}
+}
+
+func TestStatusAreaHidesDisplayPanelWhenDisabled(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.Config.DisplayMode = config.DisplayModeOff
+	model.app.Config.DisplayEnabled = false
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusArea()
+	if strings.Contains(view, "Display") {
+		t.Fatal("did not expect display panel")
+	}
+}
+
+func TestDisplayPanelRendersModes(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 3, 5, 7, 8, 6, 4, 2}
+
+	model.app.Config.DisplayMode = config.DisplayModeEqualizer
+	if display := model.renderDisplayBody(40, 9); !strings.ContainsAny(display, "█▓▒") || !strings.Contains(display, "\x1b[") {
+		t.Fatal("expected colored equalizer glyphs")
+	}
+}
+
+func TestEqualizerPeaksRiseAndFall(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+
+	model.updateVisualizerPeaks([]uint8{8, 4})
+	if len(model.visualizerPeaks) != 2 || model.visualizerPeaks[0] != 1 {
+		t.Fatalf("expected peak to rise to current level, got %#v", model.visualizerPeaks)
+	}
+
+	model.updateVisualizerPeaks([]uint8{1, 4})
+	if model.visualizerPeaks[0] >= 1 || model.visualizerPeaks[0] <= float64(1)/8 {
+		t.Fatalf("expected peak to fall slowly above current level, got %#v", model.visualizerPeaks)
+	}
+
+	model.updateVisualizerPeaks([]uint8{8, 4})
+	if model.visualizerPeaks[0] != 1 {
+		t.Fatalf("expected peak to reset when bar reaches it, got %#v", model.visualizerPeaks)
+	}
+}
+
+func TestEqualizerRendersPeakCaps(t *testing.T) {
+	display := renderEqualizerDisplay(24, 8, []uint8{1, 2, 3, 2}, []float64{0.9, 0.75, 0.6, 0.5})
+	if !strings.Contains(display, "▀") {
+		t.Fatal("expected falling peak cap glyph")
+	}
+}
+
+func TestStatusLineDoesNotIncludeVisualizer(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.width = 120
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderStatusLine()
+	if strings.Contains(view, "Display") {
+		t.Fatal("did not expect visualizer inside status panel")
+	}
+}
+
+func TestPlaybackDisablesAudioBandsWhenDisplayModeOff(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	cfg := config.Default()
+	cfg.DisplayMode = config.DisplayModeOff
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, runtime)
+
+	cmd := model.startTrackPlayback("1")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	_ = firstBatchMessage(cmd)
+
+	if len(runtime.handlers) != 1 {
+		t.Fatalf("expected one playback handler, got %d", len(runtime.handlers))
+	}
+	if runtime.handlers[0].OnAudioBands != nil {
+		t.Fatal("did not expect audio bands handler when display mode is off")
+	}
+}
+
+func TestPlaybackEnablesAudioBandsWhenDisplayModeOn(t *testing.T) {
+	runtime := &fakePlaybackRuntime{}
+	cfg := config.Default()
+	cfg.DisplayMode = config.DisplayModeEqualizer
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, runtime)
+
+	cmd := model.startTrackPlayback("1")
+	if cmd == nil {
+		t.Fatal("expected playback command")
+	}
+	_ = firstBatchMessage(cmd)
+
+	if len(runtime.handlers) != 1 {
+		t.Fatalf("expected one playback handler, got %d", len(runtime.handlers))
+	}
+	if runtime.handlers[0].OnAudioBands == nil {
+		t.Fatal("expected audio bands handler when display mode is enabled")
 	}
 }
 
