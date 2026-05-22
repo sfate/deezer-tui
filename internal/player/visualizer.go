@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/deezer"
 	"github.com/faiface/beep"
 )
 

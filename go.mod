@@ -1,4 +1,4 @@
-module deezer-tui
+module github.com/sfate/deezer-tui
 
 go 1.26.3
 

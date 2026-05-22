@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/deezer"
 )
 
 func TestDarwinPrebufferTakeKeepsCachedTrackReusable(t *testing.T) {

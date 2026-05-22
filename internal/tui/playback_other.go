@@ -5,8 +5,8 @@ package tui
 import (
 	"context"
 
-	"deezer-tui/internal/deezer"
-	"deezer-tui/internal/player"
+	"github.com/sfate/deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/player"
 )
 
 type defaultPlayerRuntime struct {

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/deezer"
 	"golang.org/x/crypto/blowfish" //nolint:staticcheck // Tests must mirror Deezer's legacy Blowfish stream encryption.
 )
 

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"syscall"
 
-	"deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/deezer"
 )
 
 type ProcessBackend struct{}

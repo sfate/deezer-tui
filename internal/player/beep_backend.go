@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/deezer"
 	"github.com/faiface/beep"
 	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/flac"
