@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"deezer-tui/internal/tui"
+	"github.com/sfate/deezer-tui/internal/tui"
 )
 
 func main() {

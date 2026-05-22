@@ -3,8 +3,8 @@ package app
 import (
 	"fmt"
 
-	"deezer-tui/internal/colorscheme"
-	"deezer-tui/internal/config"
+	"github.com/sfate/deezer-tui/internal/colorscheme"
+	"github.com/sfate/deezer-tui/internal/config"
 )
 
 type CommandKind int

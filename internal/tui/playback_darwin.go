@@ -20,8 +20,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"deezer-tui/internal/deezer"
-	"deezer-tui/internal/player"
+	"github.com/sfate/deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/player"
 )
 
 //go:embed mac_player_helper.swift

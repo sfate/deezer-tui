@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"deezer-tui/internal/app"
-	"deezer-tui/internal/config"
-	"deezer-tui/internal/deezer"
-	"deezer-tui/internal/player"
+	"github.com/sfate/deezer-tui/internal/app"
+	"github.com/sfate/deezer-tui/internal/config"
+	"github.com/sfate/deezer-tui/internal/deezer"
+	"github.com/sfate/deezer-tui/internal/player"
 )
 
 type BootstrapData struct {
