@@ -364,7 +364,7 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	model.app.SettingsState.Select(intPtr(0))
 
 	view := model.renderMain(80, 12)
-	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:", "Display:"} {
+	for _, want := range []string{"Theme:", "Aetheria", "Volume:", "Quality:", "Crossfade:", "Duration:", "Display:", "Compact View:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected settings view to contain %q", want)
 		}
@@ -413,8 +413,11 @@ func TestQueueScrollsTracksWithoutDroppingQueueInfo(t *testing.T) {
 
 	view := model.renderQueue(44, 18)
 
-	if !strings.Contains(view, "State") || !strings.Contains(view, "Now Playing") || !strings.Contains(view, "Queue") {
+	if !strings.Contains(view, "State") || !strings.Contains(view, "Queue") {
 		t.Fatal("expected queue metadata to remain visible")
+	}
+	if strings.Contains(view, "Now Playing") {
+		t.Fatal("did not expect duplicated now playing metadata in queue")
 	}
 	if strings.Contains(view, "Track 01") {
 		t.Fatal("did not expect first queue item to remain visible after current track scroll")
@@ -503,6 +506,29 @@ func TestSettingsDisplayPersists(t *testing.T) {
 	}
 	if len(saved) != 1 || saved[0].DisplayMode != config.DisplayModeOff {
 		t.Fatalf("expected off display mode to be persisted, got %#v", saved)
+	}
+}
+
+func TestSettingsCompactViewPersists(t *testing.T) {
+	cfg := config.Default()
+	cfg.CompactView = true
+	model := NewWithLoader(cfg, &fakeLoader{})
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+	model.app.ViewingSettings = true
+	model.app.ActivePanel = app.ActivePanelMain
+	model.app.SettingsState.Select(intPtr(6))
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+	if updated.app.Config.CompactView {
+		t.Fatal("expected compact view to toggle off")
+	}
+	if len(saved) != 1 || saved[0].CompactView {
+		t.Fatalf("expected compact view off to be persisted, got %#v", saved)
 	}
 }
 
@@ -1539,6 +1565,141 @@ func TestStatusAreaHidesDisplayPanelWhenDisabled(t *testing.T) {
 	view := model.renderStatusArea()
 	if strings.Contains(view, "Display") {
 		t.Fatal("did not expect display panel")
+	}
+}
+
+func TestViewUsesCompactViewWhenQueueWouldBeTooShort(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 120
+	model.height = 30
+	for i := 1; i <= 8; i++ {
+		track := app.Track{
+			ID:     fmt.Sprintf("%02d", i),
+			Title:  fmt.Sprintf("Track %02d", i),
+			Artist: "Artist",
+		}
+		model.app.QueueTracks = append(model.app.QueueTracks, track)
+		model.app.CurrentTracks = append(model.app.CurrentTracks, track)
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.CurrentPlaylistID = stringPtr("__home__")
+
+	view := model.View().Content
+	if strings.Contains(view, "Display") {
+		t.Fatal("did not expect display pane in compact view")
+	}
+	if strings.Contains(view, "Play Collection") {
+		t.Fatal("did not expect collection pane in compact view")
+	}
+	statusIndex := strings.Index(view, "Status")
+	queueIndex := strings.Index(view, "Queue")
+	if statusIndex < 0 || queueIndex < 0 || queueIndex > statusIndex {
+		t.Fatalf("expected queue pane before status pane, got queue=%d status=%d", queueIndex, statusIndex)
+	}
+	if !strings.Contains(view, "Track 03") {
+		t.Fatal("expected compact view to render queued tracks")
+	}
+	if got := len(strings.Split(view, "\n")); got != model.height {
+		t.Fatalf("expected compact view to fill terminal height, got %d lines for height %d", got, model.height)
+	}
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-1], "┘") {
+		t.Fatalf("expected footer bottom border on last viewport line, got %q", lines[len(lines)-1])
+	}
+}
+
+func TestViewKeepsCollectionAndDisplayWhenCompactViewDisabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.CompactView = false
+	model := NewWithLoader(cfg, nil)
+	model.width = 120
+	model.height = 30
+	for i := 1; i <= 8; i++ {
+		track := app.Track{
+			ID:     fmt.Sprintf("%02d", i),
+			Title:  fmt.Sprintf("Track %02d", i),
+			Artist: "Artist",
+		}
+		model.app.QueueTracks = append(model.app.QueueTracks, track)
+		model.app.CurrentTracks = append(model.app.CurrentTracks, track)
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+	model.app.CurrentPlaylistID = stringPtr("__home__")
+
+	view := model.View().Content
+	if !strings.Contains(view, "Display") {
+		t.Fatal("expected display pane when compact view is disabled")
+	}
+	if !strings.Contains(view, "Play Collection") {
+		t.Fatal("expected collection pane when compact view is disabled")
+	}
+}
+
+func TestCompactViewRendersEqualizerInsideStatusWhenHeightAllows(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 120
+	model.height = 30
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+	for i := 1; i <= 8; i++ {
+		track := app.Track{
+			ID:     fmt.Sprintf("%02d", i),
+			Title:  fmt.Sprintf("Track %02d", i),
+			Artist: "Artist",
+		}
+		model.app.QueueTracks = append(model.app.QueueTracks, track)
+	}
+	model.app.Queue = formatQueue(model.app.QueueTracks)
+	model.app.QueueIndex = intPtr(0)
+
+	view := model.View().Content
+	if strings.Contains(view, "Display") {
+		t.Fatal("did not expect separate display pane in compact view")
+	}
+	if !strings.Contains(view, "Status") {
+		t.Fatal("expected status pane in compact view")
+	}
+	if !strings.ContainsAny(view, "█▓▒") {
+		t.Fatal("expected equalizer inside status pane")
+	}
+	if got := len(strings.Split(view, "\n")); got != model.height {
+		t.Fatalf("expected compact view to fill terminal height, got %d lines for height %d", got, model.height)
+	}
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-1], "┘") {
+		t.Fatal("expected footer bottom border on last viewport line")
+	}
+}
+
+func TestCompactStatusColumnUsesFullHeight(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.app.IsPlaying = true
+	model.visualizerBands = []uint8{1, 2, 3, 4, 5, 6, 7, 8}
+
+	view := model.renderCompactStatusColumn(60, 28)
+	if got := len(strings.Split(view, "\n")); got != 28 {
+		t.Fatalf("expected compact status column to use full height, got %d", got)
+	}
+}
+
+func TestStatusProgressFitsWithoutEllipsis(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.app.NowPlaying = &app.NowPlaying{
+		ID:        "1",
+		Title:     "DLZ",
+		Artist:    "TV On The Radio",
+		CurrentMS: 200000,
+		TotalMS:   229000,
+	}
+
+	view := model.renderStatusPanel(84, 11)
+	if strings.Contains(view, "...") {
+		t.Fatal("did not expect status progress to be truncated")
+	}
+	if strings.Contains(renderProgress(200000, 229000, 20), "/") {
+		t.Fatal("did not expect timing in progress row")
 	}
 }
 

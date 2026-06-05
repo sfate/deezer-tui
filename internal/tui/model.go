@@ -637,9 +637,44 @@ func (m Model) View() tea.View {
 
 	header := m.renderHeader()
 	searchBar := m.renderSearchBar()
-	contentHeight := max(10, m.height-20)
+	footer := m.renderPlaybar()
 	sidebarWidth := min(28, max(22, m.width/5))
 	middleAvailable := max(72, m.width-sidebarWidth-4)
+	contentHeight := max(10, m.height-20)
+	if m.shouldUseCompactView(contentHeight) {
+		contentHeight = max(1, m.height-lineCount(header)-lineCount(searchBar)-lineCount(footer)-3)
+		queueWidth := middleAvailable / 2
+		statusWidth := middleAvailable - queueWidth
+		renderBody := func(height int) string {
+			return joinColumns(
+				m.renderSidebar(sidebarWidth, height),
+				m.renderQueue(queueWidth, height),
+				m.renderCompactStatusColumn(statusWidth, height),
+			)
+		}
+		body := renderBody(contentHeight)
+		content := strings.Join([]string{
+			header,
+			searchBar,
+			body,
+			footer,
+		}, "\n")
+		for gap := m.height - lineCount(content); gap > 0; gap = m.height - lineCount(content) {
+			contentHeight += gap
+			body = renderBody(contentHeight)
+			content = strings.Join([]string{
+				header,
+				searchBar,
+				body,
+				footer,
+			}, "\n")
+		}
+		content = fillViewport(content, m.width, m.height)
+		view := tea.NewView(content)
+		view.AltScreen = true
+		view.WindowTitle = "deezer-tui"
+		return view
+	}
 	queueWidth := middleAvailable / 2
 	mainWidth := middleAvailable - queueWidth
 	body := joinColumns(
@@ -647,7 +682,6 @@ func (m Model) View() tea.View {
 		m.renderQueue(queueWidth, contentHeight),
 		m.renderMain(mainWidth, contentHeight),
 	)
-	footer := m.renderPlaybar()
 	status := m.renderStatusArea()
 
 	content := strings.Join([]string{
@@ -657,11 +691,36 @@ func (m Model) View() tea.View {
 		status,
 		footer,
 	}, "\n")
-	content = fillBackground(content, m.width)
+	content = fillViewport(content, m.width, m.height)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.WindowTitle = "deezer-tui"
 	return view
+}
+
+func (m Model) shouldUseCompactView(normalQueueHeight int) bool {
+	if !m.app.Config.CompactView || len(m.app.Queue) == 0 {
+		return false
+	}
+	return normalQueueVisibleTrackRows(normalQueueHeight) < 3
+}
+
+func normalQueueVisibleTrackRows(height int) int {
+	const queueRowsBeforeTracks = 7
+	const panelBorders = 2
+	return max(0, height-panelBorders-queueRowsBeforeTracks)
+}
+
+func (m Model) renderCompactStatusColumn(width, height int) string {
+	bodyHeight := max(1, height-2)
+	body := m.renderStatusBody(width)
+	statusBodyLines := lineCount(body)
+	if displayMode(m.app.Config) == config.DisplayModeOff || bodyHeight <= statusBodyLines+1 {
+		return m.renderStatusPanel(width, height)
+	}
+	displayHeight := bodyHeight - statusBodyLines - 1
+	body += "\n" + m.renderDisplayBody(max(1, width-2), displayHeight)
+	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, width, height)
 }
 
 func (m *Model) cyclePanelForward() {
@@ -1257,6 +1316,10 @@ func (m *Model) adjustSelectedSetting(direction int) {
 		m.app.Config.DisplayMode = nextDisplayMode(m.app.Config.DisplayMode, direction)
 		m.app.Config.DisplayEnabled = m.app.Config.DisplayMode != config.DisplayModeOff
 		m.app.StatusMessage = fmt.Sprintf("Display: %s", displayModeLabel(m.app.Config.DisplayMode))
+		m.persistConfig()
+	case 6:
+		m.app.Config.CompactView = !m.app.Config.CompactView
+		m.app.StatusMessage = fmt.Sprintf("Compact view: %s", onOff(m.app.Config.CompactView))
 		m.persistConfig()
 	}
 }
@@ -1882,7 +1945,6 @@ func (m Model) renderSearchLoading(width, height int) []string {
 
 func (m Model) renderQueue(width, height int) string {
 	contentWidth := max(16, width-4)
-	metaWidth := max(16, contentWidth-2)
 	queueIndicatorWidth := 2
 	queueRowTextWidth := max(8, contentWidth-2)
 	lines := []string{
@@ -1892,10 +1954,7 @@ func (m Model) renderQueue(width, height int) string {
 		kvLine("Flow", fmt.Sprintf("%t", m.app.IsFlowQueue), activePalette.Purple),
 	}
 
-	if m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
-		track := m.app.QueueTracks[*m.app.QueueIndex]
-		lines = append(lines, "", sectionHeading("Now Playing", activePalette.Yellow), paint(" "+truncate(track.Title, metaWidth), activePalette.TextStrong, ""), paint(" "+truncate(track.Artist, metaWidth), activePalette.TextMuted, ""))
-	} else {
+	if len(m.app.Queue) == 0 {
 		lines = append(lines, "", paint(" Nothing queued", activePalette.TextMuted, ""))
 	}
 
@@ -2029,19 +2088,24 @@ func (m Model) renderStatusArea() string {
 	statusWidth := max(30, (m.width-gap)/2)
 	displayWidth := max(30, m.width-gap-statusWidth)
 	return joinColumns(
-		m.renderStatusPanel(statusWidth),
+		m.renderStatusPanel(statusWidth, 11),
 		m.renderDisplayPanel(displayWidth),
 	)
 }
 
 func (m Model) renderStatusLine() string {
-	return m.renderStatusPanel(m.width)
+	return m.renderStatusPanel(m.width, 11)
 }
 
-func (m Model) renderStatusPanel(width int) string {
+func (m Model) renderStatusPanel(width, height int) string {
+	body := m.renderStatusBody(width)
+	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, width, height)
+}
+
+func (m Model) renderStatusBody(width int) string {
 	title := "Nothing playing"
 	artist := "-"
-	progress := renderProgress(0, 0, max(20, min(48, width-26)))
+	progress := renderProgress(0, 0, statusProgressBarWidth(width))
 	source := displayCollectionTitle(derefString(m.app.CurrentPlaylistID, "Browse"))
 	quality := "-"
 	elapsed := "00:00"
@@ -2050,7 +2114,7 @@ func (m Model) renderStatusPanel(width int) string {
 	if m.app.NowPlaying != nil {
 		title = truncate(m.app.NowPlaying.Title, max(20, width-22))
 		artist = truncate(m.app.NowPlaying.Artist, max(20, width-22))
-		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, max(20, min(48, width-26)))
+		progress = renderProgress(m.app.NowPlaying.CurrentMS, m.app.NowPlaying.TotalMS, statusProgressBarWidth(width))
 		quality = qualityLabel(m.app.NowPlaying.Quality)
 		elapsed = formatClock(m.app.NowPlaying.CurrentMS)
 		total = formatClock(m.app.NowPlaying.TotalMS)
@@ -2081,12 +2145,16 @@ func (m Model) renderStatusPanel(width int) string {
 		m.renderArtworkSlot(art, 16, 9),
 		m.renderTextSlot(strings.Join(lines, "\n"), max(24, width-24), 9, 1, 1),
 	)
-	return m.renderPanel("Status", body, m.app.IsPlaying || m.app.NowPlaying != nil, width, 11)
+	return body
 }
 
 func (m Model) renderDisplayPanel(width int) string {
-	body := m.renderDisplayBody(max(1, width-2), 9)
-	return m.renderPanel("Display", body, displayMode(m.app.Config) != config.DisplayModeOff && len(m.visualizerBands) > 0, width, 11)
+	return m.renderDisplayPanelWithHeight(width, 11)
+}
+
+func (m Model) renderDisplayPanelWithHeight(width, height int) string {
+	body := m.renderDisplayBody(max(1, width-2), max(1, height-2))
+	return m.renderPanel("Display", body, displayMode(m.app.Config) != config.DisplayModeOff && len(m.visualizerBands) > 0, width, height)
 }
 
 func (m Model) renderPanel(title, body string, active bool, width, height int) string {
@@ -2621,8 +2689,13 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 	}
 	filledBar := paint(strings.Repeat("━", filled), activePalette.Orange, "")
 	emptyBar := paint(strings.Repeat("-", width-filled), activePalette.Border, "")
-	timing := paint(fmt.Sprintf("%s / %s", formatClock(currentMS), formatClock(totalMS)), activePalette.TextMuted, "")
-	return fmt.Sprintf("[%s%s] %s", filledBar, emptyBar, timing)
+	return fmt.Sprintf("[%s%s]", filledBar, emptyBar)
+}
+
+func statusProgressBarWidth(panelWidth int) int {
+	textSlotWidth := max(24, panelWidth-24)
+	valueWidth := max(4, textSlotWidth-30)
+	return max(4, min(48, valueWidth))
 }
 
 func (m Model) renderDisplayBody(width, height int) string {
@@ -2912,6 +2985,27 @@ func fillBackground(content string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+func fillViewport(content string, width, height int) string {
+	lines := strings.Split(content, "\n")
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		lines[i] = paint(fitToWidth(line, width), "", activePalette.Background)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func lineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	return len(strings.Split(content, "\n"))
+}
+
 func textWidth(s string) int {
 	return cellansi.StringWidth(s)
 }
@@ -3037,6 +3131,7 @@ func (m Model) renderSettingsRows() []string {
 		{label: "Crossfade", value: onOff(m.app.Config.CrossfadeEnabled), color: activePalette.Orange},
 		{label: "Duration", value: fmt.Sprintf("%dms", m.app.Config.CrossfadeDurationMS), color: activePalette.Yellow},
 		{label: "Display", value: displayModeLabel(m.app.Config.DisplayMode), color: activePalette.Aqua},
+		{label: "Compact View", value: onOff(m.app.Config.CompactView), color: activePalette.Green},
 	}
 	lines := make([]string, 0, len(rows))
 	for i, row := range rows {
