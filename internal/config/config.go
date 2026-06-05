@@ -49,6 +49,7 @@ type Config struct {
 	CrossfadeDurationMS uint64           `json:"crossfade_duration_ms"`
 	DisplayMode         DisplayMode      `json:"display_mode"`
 	DisplayEnabled      bool             `json:"display_enabled,omitempty"`
+	CompactView         bool             `json:"compact_view"`
 	DefaultQuality      AudioQuality     `json:"default_quality"`
 	ARL                 string           `json:"arl"`
 }
@@ -67,6 +68,7 @@ func Default() Config {
 		CrossfadeDurationMS: 0,
 		DisplayMode:         DisplayModeEqualizer,
 		DisplayEnabled:      true,
+		CompactView:         true,
 		DefaultQuality:      AudioQuality320,
 		ARL:                 "",
 	}
