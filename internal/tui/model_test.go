@@ -1021,6 +1021,25 @@ func TestPlaybackTrackChangedSyncsMediaControlMetadata(t *testing.T) {
 	}
 }
 
+func TestRememberArtworkEvictsOldEntries(t *testing.T) {
+	model := NewWithLoaderAndRuntime(config.Default(), nil, nil)
+	for i := 0; i < artworkCacheLimit+5; i++ {
+		url := fmt.Sprintf("https://example.invalid/art-%02d.jpg", i)
+		model.rememberArtwork(url, fmt.Sprintf("art-%02d", i))
+	}
+
+	if len(model.artCache) != artworkCacheLimit {
+		t.Fatalf("expected artwork cache capped at %d entries, got %d", artworkCacheLimit, len(model.artCache))
+	}
+	if _, ok := model.artCache["https://example.invalid/art-00.jpg"]; ok {
+		t.Fatal("expected oldest artwork to be evicted")
+	}
+	lastURL := fmt.Sprintf("https://example.invalid/art-%02d.jpg", artworkCacheLimit+4)
+	if model.artCache[lastURL] == "" {
+		t.Fatalf("expected newest artwork %q to remain cached", lastURL)
+	}
+}
+
 func TestRepeatKeyCyclesRepeatMode(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 

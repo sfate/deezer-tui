@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/sfate/deezer-tui/internal/config"
@@ -291,6 +292,66 @@ func TestAppendFlowTracksDoesNotOverwriteNonFlowPageTracks(t *testing.T) {
 	assertTracks(t, app.CurrentTracks, []Track{track("10", "Home Track", "Home Artist")})
 	if len(app.QueueTracks) != 3 {
 		t.Fatalf("expected queue length 3, got %d", len(app.QueueTracks))
+	}
+}
+
+func TestAppendFlowTracksTrimsPlayedFlowHistory(t *testing.T) {
+	app := testApp()
+	initial := make([]Track, flowQueueMaxTracks)
+	for i := range initial {
+		id := fmt.Sprintf("%03d", i+1)
+		initial[i] = track(id, "Song "+id, "Artist")
+	}
+	app.LoadFlowTracks(initial, true)
+	app.QueueIndex = intPtr(len(initial) - 1)
+	app.QueueState.Select(intPtr(len(initial) - 1))
+
+	next := make([]Track, 12)
+	for i := range next {
+		id := fmt.Sprintf("%03d", len(initial)+i+1)
+		next[i] = track(id, "Song "+id, "Artist")
+	}
+	result := app.AppendFlowTracks(next, false)
+
+	if result.AppendedCount != len(next) {
+		t.Fatalf("expected %d appended tracks, got %d", len(next), result.AppendedCount)
+	}
+	if len(app.QueueTracks) > flowQueueMaxTracks {
+		t.Fatalf("expected queue capped at %d tracks, got %d", flowQueueMaxTracks, len(app.QueueTracks))
+	}
+	assertSelectedPtr(t, app.QueueIndex, flowQueuePreviousLimit)
+	assertTrackIDs(t, app.QueueTracks[:2], []string{"048", "049"})
+	assertTrackIDs(t, app.QueueTracks[len(app.QueueTracks)-2:], []string{"083", "084"})
+	assertTracks(t, app.CurrentTracks, app.QueueTracks)
+}
+
+func TestAppendFlowTracksRemembersTrimmedTrackIDsForDeduplication(t *testing.T) {
+	app := testApp()
+	initial := make([]Track, flowQueueMaxTracks)
+	for i := range initial {
+		id := fmt.Sprintf("%03d", i+1)
+		initial[i] = track(id, "Song "+id, "Artist")
+	}
+	app.LoadFlowTracks(initial, true)
+	app.QueueIndex = intPtr(len(initial) - 1)
+
+	next := make([]Track, 12)
+	for i := range next {
+		id := fmt.Sprintf("%03d", len(initial)+i+1)
+		next[i] = track(id, "Song "+id, "Artist")
+	}
+	app.AppendFlowTracks(next, false)
+
+	result := app.AppendFlowTracks([]Track{
+		track("001", "Old duplicate", "Artist"),
+		track("085", "New", "Artist"),
+	}, false)
+
+	if result.AppendedCount != 1 {
+		t.Fatalf("expected only one new track, got %d", result.AppendedCount)
+	}
+	if app.QueueTracks[len(app.QueueTracks)-1].ID != "085" {
+		t.Fatalf("expected new track appended at tail, got %#v", app.QueueTracks[len(app.QueueTracks)-1])
 	}
 }
 

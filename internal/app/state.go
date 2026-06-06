@@ -33,6 +33,11 @@ const (
 
 const SettingsItemCount = 7
 
+const (
+	flowQueueMaxTracks     = 72
+	flowQueuePreviousLimit = 24
+)
+
 type SearchCategory int
 
 const (
@@ -158,6 +163,7 @@ type App struct {
 	FlowNextIndex       int
 	FlowLoadingMore     bool
 	IsFlowQueue         bool
+	FlowSeenTrackIDs    map[string]struct{}
 }
 
 func New(cfg config.Config) *App {
@@ -188,6 +194,7 @@ func New(cfg config.Config) *App {
 		FlowNextIndex:       0,
 		FlowLoadingMore:     false,
 		IsFlowQueue:         false,
+		FlowSeenTrackIDs:    map[string]struct{}{},
 	}
 
 	app.NavState.Select(intPtr(0))
@@ -362,6 +369,12 @@ func (a *App) SwitchSearchCategoryRight() {
 
 func (a *App) LoadFlowTracks(tracks []Track, autoplay bool) *string {
 	a.CurrentTracks = cloneTracks(tracks)
+	a.FlowSeenTrackIDs = map[string]struct{}{}
+	for _, track := range tracks {
+		if track.ID != "" {
+			a.FlowSeenTrackIDs[track.ID] = struct{}{}
+		}
+	}
 	a.ShowingSearchResult = false
 	a.SearchLoading = false
 	a.SearchPlaylists = nil
@@ -384,17 +397,24 @@ func (a *App) LoadFlowTracks(tracks []Track, autoplay bool) *string {
 }
 
 func (a *App) AppendFlowTracks(tracks []Track, autoplay bool) FlowAppendResult {
-	seenIDs := make(map[string]struct{}, len(a.QueueTracks))
-	for _, track := range a.QueueTracks {
-		seenIDs[track.ID] = struct{}{}
+	if a.FlowSeenTrackIDs == nil {
+		a.FlowSeenTrackIDs = map[string]struct{}{}
+		for _, track := range a.QueueTracks {
+			if track.ID != "" {
+				a.FlowSeenTrackIDs[track.ID] = struct{}{}
+			}
+		}
 	}
 
 	appendedTracks := make([]Track, 0, len(tracks))
 	for _, track := range tracks {
-		if _, ok := seenIDs[track.ID]; ok {
+		if track.ID == "" {
 			continue
 		}
-		seenIDs[track.ID] = struct{}{}
+		if _, ok := a.FlowSeenTrackIDs[track.ID]; ok {
+			continue
+		}
+		a.FlowSeenTrackIDs[track.ID] = struct{}{}
 		appendedTracks = append(appendedTracks, track)
 	}
 
@@ -419,6 +439,7 @@ func (a *App) AppendFlowTracks(tracks []Track, autoplay bool) FlowAppendResult {
 		a.IsFlowQueue = true
 		result.AutoplayTrackID = stringPtr(a.QueueTracks[startIdx].ID)
 	}
+	a.trimFlowQueue()
 
 	return result
 }
@@ -437,6 +458,40 @@ func formatQueue(tracks []Track) []string {
 		queue = append(queue, fmt.Sprintf("%s - %s", track.Title, track.Artist))
 	}
 	return queue
+}
+
+func (a *App) trimFlowQueue() {
+	if !a.IsFlowQueue || len(a.QueueTracks) <= flowQueueMaxTracks {
+		return
+	}
+	current := derefOrZero(a.QueueIndex)
+	if current < 0 {
+		current = 0
+	}
+	if current >= len(a.QueueTracks) {
+		current = len(a.QueueTracks) - 1
+	}
+	start := max0(current - flowQueuePreviousLimit)
+	if remaining := len(a.QueueTracks) - start; remaining > flowQueueMaxTracks {
+		start = len(a.QueueTracks) - flowQueueMaxTracks
+	}
+	if start <= 0 {
+		return
+	}
+	a.QueueTracks = cloneTracks(a.QueueTracks[start:])
+	a.Queue = append([]string(nil), a.Queue[start:]...)
+	if a.CurrentPlaylistID != nil && *a.CurrentPlaylistID == "__flow__" {
+		a.CurrentTracks = cloneTracks(a.QueueTracks)
+		selected := derefOrZero(a.MainState.Selected())
+		if selected > 0 {
+			a.MainState.Select(intPtr(max0(selected - start)))
+		}
+	}
+	if a.QueueIndex != nil {
+		a.QueueIndex = intPtr(max0(*a.QueueIndex - start))
+	}
+	selected := derefOrZero(a.QueueState.Selected())
+	a.QueueState.Select(intPtr(max0(selected - start)))
 }
 
 func cloneTracks(tracks []Track) []Track {
