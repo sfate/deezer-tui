@@ -31,6 +31,7 @@ const (
 	searchTimeout                    = 20 * time.Second
 	prebufferWindowSize              = 20
 	prebufferCacheStatusLimit        = 20
+	artworkCacheLimit                = 40
 )
 
 type bootstrapLoadedMsg struct {
@@ -149,6 +150,7 @@ type Model struct {
 	artworkURL        string
 	artworkANSI       string
 	artCache          map[string]string
+	artCacheOrder     []string
 	width             int
 	height            int
 	nextPlaybackID    int
@@ -203,6 +205,7 @@ func NewWithConfig(cfg config.Config) Model {
 		playbackEvents:    make(chan tea.Msg, 32),
 		saveConfig:        config.Save,
 		artCache:          map[string]string{},
+		artCacheOrder:     []string{},
 		prebufferStatuses: map[string]PrebufferStatus{},
 		prebufferReady:    []string{},
 		ready:             loader == nil,
@@ -226,6 +229,7 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		playbackEvents:    make(chan tea.Msg, 32),
 		saveConfig:        config.Save,
 		artCache:          map[string]string{},
+		artCacheOrder:     []string{},
 		prebufferStatuses: map[string]PrebufferStatus{},
 		prebufferReady:    []string{},
 		ready:             loader == nil,
@@ -501,7 +505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.url == "" || msg.url != m.artworkURL {
 			return m, nil
 		}
-		m.artCache[msg.url] = msg.art
+		m.rememberArtwork(msg.url, msg.art)
 		m.artworkANSI = msg.art
 		return m, nil
 	case playbackTickMsg:
@@ -1709,6 +1713,26 @@ func (m *Model) rememberReadyPrebuffer(key string) {
 		m.prebufferReady = m.prebufferReady[1:]
 		if status, ok := m.prebufferStatuses[evict]; ok && status == PrebufferStatusReady {
 			delete(m.prebufferStatuses, evict)
+		}
+	}
+}
+
+func (m *Model) rememberArtwork(url string, art string) {
+	if strings.TrimSpace(url) == "" {
+		return
+	}
+	if m.artCache == nil {
+		m.artCache = map[string]string{}
+	}
+	if _, ok := m.artCache[url]; !ok {
+		m.artCacheOrder = append(m.artCacheOrder, url)
+	}
+	m.artCache[url] = art
+	for len(m.artCacheOrder) > artworkCacheLimit {
+		evict := m.artCacheOrder[0]
+		m.artCacheOrder = m.artCacheOrder[1:]
+		if evict != url {
+			delete(m.artCache, evict)
 		}
 	}
 }
