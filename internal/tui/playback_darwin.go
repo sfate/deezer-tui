@@ -77,6 +77,12 @@ func (r *defaultPlayerRuntime) UpdateMediaControl(state MediaControlState) {
 	r.manager.updateMediaControl(state)
 }
 
+func (r *defaultPlayerRuntime) Shutdown() {
+	if r.prebuffer != nil {
+		r.prebuffer.Close()
+	}
+}
+
 type darwinPlaybackSession struct {
 	mu              sync.Mutex
 	file            string
@@ -594,6 +600,7 @@ type darwinPrebufferStore struct {
 	order    []string
 	inflight map[string]*darwinPrebufferJob
 	pending  []darwinPrebufferRequest
+	closed   bool
 }
 
 const (
@@ -612,6 +619,9 @@ func (s *darwinPrebufferStore) Prebuffer(ctx context.Context, client *deezer.Cli
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return
+	}
 	if len(trackIDs) == 0 {
 		s.cancelPendingLocked()
 		return
@@ -697,8 +707,18 @@ func (s *darwinPrebufferStore) TakeOrPrepare(ctx context.Context, client *deezer
 		}
 		s.mu.Lock()
 		if _, ok := s.current[key]; ok {
+			if prepared.File != "" {
+				_ = os.Remove(prepared.File)
+			}
 			s.mu.Unlock()
-			return prepared, nil
+			continue
+		}
+		if s.closed {
+			if prepared.File != "" {
+				_ = os.Remove(prepared.File)
+			}
+			s.mu.Unlock()
+			return nil, context.Canceled
 		}
 		if job, ok := s.inflight[key]; ok {
 			job.cancel()
@@ -720,7 +740,7 @@ func (s *darwinPrebufferStore) runJob(ctx context.Context, client *deezer.Client
 	defer s.mu.Unlock()
 
 	key := darwinPrebufferKey(job.trackID, job.quality)
-	if s.inflight[key] != job {
+	if s.closed || s.inflight[key] != job {
 		if result != nil && result.File != "" {
 			_ = os.Remove(result.File)
 		}
@@ -749,6 +769,21 @@ func (s *darwinPrebufferStore) cancelPendingLocked() {
 		delete(s.inflight, key)
 	}
 	s.pending = nil
+}
+
+func (s *darwinPrebufferStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.closed = true
+	s.cancelPendingLocked()
+	for key, prepared := range s.current {
+		if prepared != nil && prepared.File != "" {
+			_ = os.Remove(prepared.File)
+		}
+		delete(s.current, key)
+	}
+	s.order = nil
 }
 
 func (s *darwinPrebufferStore) rememberCachedLocked(key string) {

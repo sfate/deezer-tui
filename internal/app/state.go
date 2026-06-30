@@ -36,6 +36,7 @@ const SettingsItemCount = 7
 const (
 	flowQueueMaxTracks     = 72
 	flowQueuePreviousLimit = 24
+	flowSeenTrackIDLimit   = 240
 )
 
 type SearchCategory int
@@ -130,71 +131,73 @@ type FlowAppendResult struct {
 }
 
 type App struct {
-	Config              config.Config
-	CurrentRoute        Route
-	NowPlaying          *NowPlaying
-	IsPlaying           bool
-	Volume              uint16
-	ActivePanel         ActivePanel
-	NavState            ListState
-	PlaylistState       ListState
-	QueueState          ListState
-	Playlists           []Playlist
-	Queue               []string
-	QueueTracks         []Track
-	QueueIndex          *int
-	CurrentTracks       []Track
-	SearchPlaylists     []Playlist
-	SearchArtists       []Artist
-	ShowingSearchResult bool
-	SearchCategory      SearchCategory
-	MainState           ListState
-	SettingsState       ListState
-	PlayerButtonIndex   int
-	PlayerInfoIndex     int
-	RepeatMode          RepeatMode
-	ViewingSettings     bool
-	CurrentPlaylistID   *string
-	StatusMessage       string
-	IsSearching         bool
-	SearchLoading       bool
-	SearchQuery         string
-	AutoTransitionArmed bool
-	FlowNextIndex       int
-	FlowLoadingMore     bool
-	IsFlowQueue         bool
-	FlowSeenTrackIDs    map[string]struct{}
+	Config               config.Config
+	CurrentRoute         Route
+	NowPlaying           *NowPlaying
+	IsPlaying            bool
+	Volume               uint16
+	ActivePanel          ActivePanel
+	NavState             ListState
+	PlaylistState        ListState
+	QueueState           ListState
+	Playlists            []Playlist
+	Queue                []string
+	QueueTracks          []Track
+	QueueIndex           *int
+	CurrentTracks        []Track
+	SearchPlaylists      []Playlist
+	SearchArtists        []Artist
+	ShowingSearchResult  bool
+	SearchCategory       SearchCategory
+	MainState            ListState
+	SettingsState        ListState
+	PlayerButtonIndex    int
+	PlayerInfoIndex      int
+	RepeatMode           RepeatMode
+	ViewingSettings      bool
+	CurrentPlaylistID    *string
+	StatusMessage        string
+	IsSearching          bool
+	SearchLoading        bool
+	SearchQuery          string
+	AutoTransitionArmed  bool
+	FlowNextIndex        int
+	FlowLoadingMore      bool
+	IsFlowQueue          bool
+	FlowSeenTrackIDs     map[string]struct{}
+	FlowSeenTrackIDOrder []string
 }
 
 func New(cfg config.Config) *App {
 	cfg.Theme = colorscheme.Normalize(cfg.Theme)
 	app := &App{
-		Config:              cfg,
-		CurrentRoute:        RouteLibrary,
-		IsPlaying:           false,
-		Volume:              100,
-		ActivePanel:         ActivePanelNavigation,
-		Playlists:           []Playlist{},
-		Queue:               []string{},
-		QueueTracks:         []Track{},
-		CurrentTracks:       []Track{},
-		SearchPlaylists:     []Playlist{},
-		SearchArtists:       []Artist{},
-		ShowingSearchResult: false,
-		SearchCategory:      SearchCategoryTracks,
-		PlayerButtonIndex:   2,
-		PlayerInfoIndex:     0,
-		RepeatMode:          RepeatModeOff,
-		ViewingSettings:     false,
-		StatusMessage:       "Status: Waiting...",
-		IsSearching:         false,
-		SearchLoading:       false,
-		SearchQuery:         "",
-		AutoTransitionArmed: false,
-		FlowNextIndex:       0,
-		FlowLoadingMore:     false,
-		IsFlowQueue:         false,
-		FlowSeenTrackIDs:    map[string]struct{}{},
+		Config:               cfg,
+		CurrentRoute:         RouteLibrary,
+		IsPlaying:            false,
+		Volume:               100,
+		ActivePanel:          ActivePanelNavigation,
+		Playlists:            []Playlist{},
+		Queue:                []string{},
+		QueueTracks:          []Track{},
+		CurrentTracks:        []Track{},
+		SearchPlaylists:      []Playlist{},
+		SearchArtists:        []Artist{},
+		ShowingSearchResult:  false,
+		SearchCategory:       SearchCategoryTracks,
+		PlayerButtonIndex:    2,
+		PlayerInfoIndex:      0,
+		RepeatMode:           RepeatModeOff,
+		ViewingSettings:      false,
+		StatusMessage:        "Status: Waiting...",
+		IsSearching:          false,
+		SearchLoading:        false,
+		SearchQuery:          "",
+		AutoTransitionArmed:  false,
+		FlowNextIndex:        0,
+		FlowLoadingMore:      false,
+		IsFlowQueue:          false,
+		FlowSeenTrackIDs:     map[string]struct{}{},
+		FlowSeenTrackIDOrder: []string{},
 	}
 
 	app.NavState.Select(intPtr(0))
@@ -370,9 +373,10 @@ func (a *App) SwitchSearchCategoryRight() {
 func (a *App) LoadFlowTracks(tracks []Track, autoplay bool) *string {
 	a.CurrentTracks = cloneTracks(tracks)
 	a.FlowSeenTrackIDs = map[string]struct{}{}
+	a.FlowSeenTrackIDOrder = nil
 	for _, track := range tracks {
 		if track.ID != "" {
-			a.FlowSeenTrackIDs[track.ID] = struct{}{}
+			a.rememberFlowSeenTrackID(track.ID)
 		}
 	}
 	a.ShowingSearchResult = false
@@ -399,9 +403,10 @@ func (a *App) LoadFlowTracks(tracks []Track, autoplay bool) *string {
 func (a *App) AppendFlowTracks(tracks []Track, autoplay bool) FlowAppendResult {
 	if a.FlowSeenTrackIDs == nil {
 		a.FlowSeenTrackIDs = map[string]struct{}{}
+		a.FlowSeenTrackIDOrder = nil
 		for _, track := range a.QueueTracks {
 			if track.ID != "" {
-				a.FlowSeenTrackIDs[track.ID] = struct{}{}
+				a.rememberFlowSeenTrackID(track.ID)
 			}
 		}
 	}
@@ -414,7 +419,7 @@ func (a *App) AppendFlowTracks(tracks []Track, autoplay bool) FlowAppendResult {
 		if _, ok := a.FlowSeenTrackIDs[track.ID]; ok {
 			continue
 		}
-		a.FlowSeenTrackIDs[track.ID] = struct{}{}
+		a.rememberFlowSeenTrackID(track.ID)
 		appendedTracks = append(appendedTracks, track)
 	}
 
@@ -442,6 +447,25 @@ func (a *App) AppendFlowTracks(tracks []Track, autoplay bool) FlowAppendResult {
 	a.trimFlowQueue()
 
 	return result
+}
+
+func (a *App) rememberFlowSeenTrackID(trackID string) {
+	if trackID == "" {
+		return
+	}
+	if a.FlowSeenTrackIDs == nil {
+		a.FlowSeenTrackIDs = map[string]struct{}{}
+	}
+	if _, ok := a.FlowSeenTrackIDs[trackID]; ok {
+		return
+	}
+	a.FlowSeenTrackIDs[trackID] = struct{}{}
+	a.FlowSeenTrackIDOrder = append(a.FlowSeenTrackIDOrder, trackID)
+	for len(a.FlowSeenTrackIDOrder) > flowSeenTrackIDLimit {
+		evict := a.FlowSeenTrackIDOrder[0]
+		a.FlowSeenTrackIDOrder = a.FlowSeenTrackIDOrder[1:]
+		delete(a.FlowSeenTrackIDs, evict)
+	}
 }
 
 func (a *App) ShouldLoadMoreFlow() bool {
