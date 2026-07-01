@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	goruntime "runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -26,12 +29,14 @@ var prebufferSpinnerFrames = []string{"◐", "◓", "◑", "◒"}
 var searchLoadingFrames = []string{"⡿", "⣟", "⣯", "⣷", "⣾", "⣽", "⣻", "⢿"}
 
 const (
-	seekStepMS                uint64 = 10_000
-	manualPlaybackStartDelay         = 90 * time.Millisecond
-	searchTimeout                    = 20 * time.Second
-	prebufferWindowSize              = 20
-	prebufferCacheStatusLimit        = 20
-	artworkCacheLimit                = 40
+	seekStepMS                    uint64 = 10_000
+	manualPlaybackStartDelay             = 90 * time.Millisecond
+	searchTimeout                        = 20 * time.Second
+	visualizerUIUpdateMinInterval        = 33 * time.Millisecond
+	prebufferWindowSize                  = 20
+	flowPrebufferWindowSize              = 6
+	prebufferCacheStatusLimit            = 20
+	artworkCacheLimit                    = 40
 )
 
 type bootstrapLoadedMsg struct {
@@ -170,8 +175,12 @@ type Model struct {
 	activeSearchID    int
 	prebufferStatuses map[string]PrebufferStatus
 	prebufferReady    []string
+	prebufferTicking  bool
 	visualizerBands   []uint8
 	visualizerPeaks   []float64
+	perfLogPath       string
+	perfLastReport    time.Time
+	perfMsgCounts     map[string]int
 }
 
 func New() Model {
@@ -208,6 +217,8 @@ func NewWithConfig(cfg config.Config) Model {
 		artCacheOrder:     []string{},
 		prebufferStatuses: map[string]PrebufferStatus{},
 		prebufferReady:    []string{},
+		perfLogPath:       perfLogPathFromEnv(),
+		perfMsgCounts:     map[string]int{},
 		ready:             loader == nil,
 	}
 }
@@ -232,6 +243,8 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		artCacheOrder:     []string{},
 		prebufferStatuses: map[string]PrebufferStatus{},
 		prebufferReady:    []string{},
+		perfLogPath:       perfLogPathFromEnv(),
+		perfMsgCounts:     map[string]int{},
 		ready:             loader == nil,
 	}
 }
@@ -251,6 +264,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.recordPerfMsg(msg)
 	switch msg := msg.(type) {
 	case bootstrapLoadedMsg:
 		m.app.Playlists = msg.playlists
@@ -322,14 +336,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, listenPlaybackEventCmd(m.playbackEvents)
 		}
 		m.setPrebufferStatus(msg.trackID, msg.quality, msg.status)
-		if msg.status == PrebufferStatusLoading {
+		if msg.status == PrebufferStatusLoading && !m.prebufferTicking {
+			m.prebufferTicking = true
 			return m, tea.Batch(listenPlaybackEventCmd(m.playbackEvents), prebufferTickCmd())
 		}
 		return m, listenPlaybackEventCmd(m.playbackEvents)
 	case prebufferTickMsg:
 		if !m.hasLoadingPrebuffer() {
+			m.prebufferTicking = false
 			return m, nil
 		}
+		m.prebufferTicking = true
 		m.loadingFrame = (m.loadingFrame + 1) % len(prebufferSpinnerFrames)
 		return m, prebufferTickCmd()
 	case mediaControlCommandMsg:
@@ -553,6 +570,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.session != nil {
 				m.session.Stop()
 			}
+			m.shutdownRuntime()
 			return m, tea.Quit
 		case "esc":
 			m.app.IsSearching = false
@@ -625,6 +643,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
+	renderStarted := time.Now()
+	defer func() {
+		m.recordRenderDuration(time.Since(renderStarted))
+	}()
+
 	if m.width == 0 || m.height == 0 {
 		view := tea.NewView("Loading deezer-tui...")
 		view.AltScreen = true
@@ -1557,6 +1580,12 @@ func (m *Model) stopCurrentSession() {
 	m.session.Stop()
 }
 
+func (m *Model) shutdownRuntime() {
+	if runtime, ok := m.runtime.(ShutdownRuntime); ok {
+		runtime.Shutdown()
+	}
+}
+
 func (m *Model) maybeStartCrossfadeTransition(currentMS, totalMS uint64) tea.Cmd {
 	if !m.app.Config.CrossfadeEnabled || m.app.Config.CrossfadeDurationMS == 0 {
 		return nil
@@ -1647,10 +1676,18 @@ func (m *Model) maybeLoadMoreFlowForTail() tea.Cmd {
 }
 
 func (m *Model) prebufferQueueWindowFrom(start int) tea.Cmd {
-	return m.prebufferTrackWindowFrom(m.app.QueueTracks, start)
+	limit := prebufferWindowSize
+	if m.app.IsFlowQueue {
+		limit = flowPrebufferWindowSize
+	}
+	return m.prebufferTrackWindowFromLimit(m.app.QueueTracks, start, limit)
 }
 
 func (m *Model) prebufferTrackWindowFrom(tracks []app.Track, start int) tea.Cmd {
+	return m.prebufferTrackWindowFromLimit(tracks, start, prebufferWindowSize)
+}
+
+func (m *Model) prebufferTrackWindowFromLimit(tracks []app.Track, start int, limit int) tea.Cmd {
 	runtime, ok := m.runtime.(PrebufferingRuntime)
 	if !ok {
 		return nil
@@ -1659,7 +1696,10 @@ func (m *Model) prebufferTrackWindowFrom(tracks []app.Track, start int) tea.Cmd 
 		runtime.Prebuffer(nil, qualityFromConfig(m.app.Config.DefaultQuality), m.playbackEvents)
 		return nil
 	}
-	end := min(len(tracks), start+prebufferWindowSize)
+	if limit <= 0 {
+		limit = prebufferWindowSize
+	}
+	end := min(len(tracks), start+limit)
 	trackIDs := make([]string, 0, end-start)
 	for _, track := range tracks[start:end] {
 		if strings.TrimSpace(track.ID) == "" {
@@ -1673,7 +1713,7 @@ func (m *Model) prebufferTrackWindowFrom(tracks []app.Track, start int) tea.Cmd 
 	}
 	runtime.Prebuffer(trackIDs, quality, m.playbackEvents)
 	if len(trackIDs) > 0 {
-		return tea.Batch(prebufferTickCmd(), listenPlaybackEventCmd(m.playbackEvents))
+		return listenPlaybackEventCmd(m.playbackEvents)
 	}
 	return nil
 }
@@ -1752,6 +1792,95 @@ func (m Model) hasLoadingPrebuffer() bool {
 		}
 	}
 	return false
+}
+
+func perfLogPathFromEnv() string {
+	value := strings.TrimSpace(os.Getenv("DEEZER_TUI_PERF_LOG"))
+	if value == "" {
+		return ""
+	}
+	if value == "1" || strings.EqualFold(value, "true") {
+		return os.TempDir() + string(os.PathSeparator) + "deezer-tui-perf.log"
+	}
+	return value
+}
+
+func (m *Model) recordPerfMsg(msg tea.Msg) {
+	if strings.TrimSpace(m.perfLogPath) == "" {
+		return
+	}
+	if m.perfMsgCounts == nil {
+		m.perfMsgCounts = map[string]int{}
+	}
+	m.perfMsgCounts[fmt.Sprintf("%T", msg)]++
+	now := time.Now()
+	if m.perfLastReport.IsZero() {
+		m.perfLastReport = now
+		return
+	}
+	if now.Sub(m.perfLastReport) < 10*time.Second {
+		return
+	}
+
+	var mem goruntime.MemStats
+	goruntime.ReadMemStats(&mem)
+	appendPerfLine(m.perfLogPath, fmt.Sprintf(
+		"ts=%s goroutines=%d heap_alloc_mb=%.1f queue=%d flow=%t flow_next=%d flow_loading=%t prebuffer_statuses=%d prebuffer_ready=%d prebuffer_ticking=%t msg_counts=%s",
+		now.Format(time.RFC3339),
+		goruntime.NumGoroutine(),
+		float64(mem.Alloc)/(1024*1024),
+		len(m.app.QueueTracks),
+		m.app.IsFlowQueue,
+		m.app.FlowNextIndex,
+		m.app.FlowLoadingMore,
+		len(m.prebufferStatuses),
+		len(m.prebufferReady),
+		m.prebufferTicking,
+		formatPerfCounts(m.perfMsgCounts),
+	))
+	m.perfMsgCounts = map[string]int{}
+	m.perfLastReport = now
+}
+
+func (m Model) recordRenderDuration(duration time.Duration) {
+	if strings.TrimSpace(m.perfLogPath) == "" || duration < 25*time.Millisecond {
+		return
+	}
+	appendPerfLine(m.perfLogPath, fmt.Sprintf(
+		"ts=%s slow_render_ms=%d width=%d height=%d queue=%d flow=%t visualizer=%t",
+		time.Now().Format(time.RFC3339),
+		duration.Milliseconds(),
+		m.width,
+		m.height,
+		len(m.app.QueueTracks),
+		m.app.IsFlowQueue,
+		len(m.visualizerBands) > 0,
+	))
+}
+
+func formatPerfCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func appendPerfLine(path string, line string) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = file.Close() }()
+	_, _ = file.WriteString(line + "\n")
 }
 
 func (m *Model) updateVisualizerPeaks(bands []uint8) {
@@ -2334,6 +2463,8 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 		return nil
 	}
 	return func() tea.Msg {
+		var visualizerMu sync.Mutex
+		var lastVisualizerSent time.Time
 		handler := player.EventHandler{
 			OnTrackChanged: func(meta deezer.TrackMetadata, q deezer.AudioQuality, initialMS uint64) {
 				events <- playbackTrackChangedMsg{playID: playID, meta: meta, quality: q, initialMS: initialMS}
@@ -2350,6 +2481,14 @@ func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntim
 		}
 		if enableVisualizer {
 			handler.OnAudioBands = func(bands []uint8) {
+				visualizerMu.Lock()
+				if !lastVisualizerSent.IsZero() && time.Since(lastVisualizerSent) < visualizerUIUpdateMinInterval {
+					visualizerMu.Unlock()
+					return
+				}
+				lastVisualizerSent = time.Now()
+				visualizerMu.Unlock()
+
 				copied := append([]uint8(nil), bands...)
 				select {
 				case events <- playbackVisualizerMsg{playID: playID, bands: copied}:

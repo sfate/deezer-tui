@@ -21,6 +21,10 @@ type PlayerRuntime interface {
 	Start(trackID string, quality deezer.AudioQuality, seekMS uint64, handler player.EventHandler) (PlaybackSession, error)
 }
 
+type ShutdownRuntime interface {
+	Shutdown()
+}
+
 type PrebufferStatus int
 
 const (

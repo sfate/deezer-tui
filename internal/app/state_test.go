@@ -355,6 +355,27 @@ func TestAppendFlowTracksRemembersTrimmedTrackIDsForDeduplication(t *testing.T) 
 	}
 }
 
+func TestFlowSeenTrackIDsAreBounded(t *testing.T) {
+	app := testApp()
+	initial := make([]Track, flowSeenTrackIDLimit+1)
+	for i := range initial {
+		id := fmt.Sprintf("%03d", i+1)
+		initial[i] = track(id, "Song "+id, "Artist")
+	}
+
+	app.LoadFlowTracks(initial, false)
+
+	if len(app.FlowSeenTrackIDs) != flowSeenTrackIDLimit {
+		t.Fatalf("expected %d seen IDs, got %d", flowSeenTrackIDLimit, len(app.FlowSeenTrackIDs))
+	}
+	if _, ok := app.FlowSeenTrackIDs["001"]; ok {
+		t.Fatal("expected oldest seen ID to be evicted")
+	}
+	if _, ok := app.FlowSeenTrackIDs[fmt.Sprintf("%03d", flowSeenTrackIDLimit+1)]; !ok {
+		t.Fatal("expected newest seen ID to remain")
+	}
+}
+
 func TestShouldLoadMoreFlowOnlyOnLastQueuedFlowTrackEvenIfPlaylistIDChanges(t *testing.T) {
 	app := testApp()
 	app.LoadFlowTracks([]Track{track("1", "One", "A"), track("2", "Two", "B")}, true)
