@@ -259,7 +259,7 @@ func TestOpenLoginShortcutEntersLoginModeWithExistingSession(t *testing.T) {
 	}
 }
 
-func TestLoginConfirmationEnterOpensBrowserState(t *testing.T) {
+func TestLoginConfirmationEnterStartsBrowserLogin(t *testing.T) {
 	model := NewWithConfig(config.Default())
 	model.loginConfirmOpen = true
 
@@ -269,11 +269,11 @@ func TestLoginConfirmationEnterOpensBrowserState(t *testing.T) {
 	if updated.loginConfirmOpen {
 		t.Fatal("expected confirmation state to clear")
 	}
-	if !updated.loginBrowserOpen {
-		t.Fatal("expected browser-open state")
+	if !updated.loginLoading {
+		t.Fatal("expected browser login to start loading")
 	}
 	if cmd == nil {
-		t.Fatal("expected browser open command")
+		t.Fatal("expected browser login command")
 	}
 }
 

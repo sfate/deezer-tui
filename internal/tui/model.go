@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -140,10 +139,6 @@ type loginFailedMsg struct {
 	message string
 }
 
-type browserLoginOpenedMsg struct {
-	err error
-}
-
 type artworkLoadedMsg struct {
 	url string
 	art string
@@ -198,7 +193,6 @@ type Model struct {
 	loginInput        string
 	loginLoading      bool
 	loginConfirmOpen  bool
-	loginBrowserOpen  bool
 	perfLogPath       string
 	perfLastReport    time.Time
 	perfMsgCounts     map[string]int
@@ -314,13 +308,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginFailedMsg:
 		m.loginLoading = false
 		m.app.StatusMessage = msg.message
-		return m, nil
-	case browserLoginOpenedMsg:
-		if msg.err != nil {
-			m.app.StatusMessage = fmt.Sprintf("Browser login error: %v", msg.err)
-		} else {
-			m.app.StatusMessage = "Browser opened. After signing in, paste ARL or Cookie header here."
-		}
 		return m, nil
 	case bootstrapLoadedMsg:
 		m.app.Playlists = msg.playlists
@@ -712,7 +699,6 @@ func (m *Model) startLogin() {
 	m.loginLoading = false
 	m.loginInput = ""
 	m.loginConfirmOpen = true
-	m.loginBrowserOpen = false
 	m.app.IsPlaying = false
 	m.app.IsSearching = false
 	m.app.SearchLoading = false
@@ -1275,31 +1261,10 @@ func (m *Model) handleLoginInput(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		case "enter":
 			m.loginConfirmOpen = false
-			m.loginBrowserOpen = true
-			m.app.StatusMessage = "Opening Deezer login in browser..."
-			return openBrowserLoginCmd()
-		}
-		return nil
-	}
-
-	if m.loginBrowserOpen {
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return tea.Quit
-		case "esc":
-			m.cancelLogin()
-			return nil
-		case "enter":
-			if strings.TrimSpace(m.app.Config.ARL) == "" {
-				m.app.StatusMessage = "Browser login opened, but no saved ARL exists to validate"
-				return nil
-			}
-			cfg := m.app.Config
 			m.loginLoading = true
-			m.app.StatusMessage = fmt.Sprintf("Validating saved login %s...", auth.MaskARL(cfg.ARL))
-			return validateLoginCmd(cfg, m.loaderFactory)
+			m.app.StatusMessage = "Complete Deezer login in the browser..."
+			return browserLoginCmd(m.app.Config, m.loaderFactory)
 		case "p", "P":
-			m.loginBrowserOpen = false
 			m.app.StatusMessage = "Paste ARL or Cookie header, then press Enter"
 			return nil
 		}
@@ -1353,7 +1318,6 @@ func (m *Model) cancelLogin() {
 	m.loginLoading = false
 	m.loginInput = ""
 	m.loginConfirmOpen = false
-	m.loginBrowserOpen = false
 	m.app.StatusMessage = "Library"
 	if m.loader == nil {
 		m.loginActive = true
@@ -2668,27 +2632,25 @@ func validateLoginCmd(cfg config.Config, loaderFactory func(config.Config) (Load
 	}
 }
 
-func openBrowserLoginCmd() tea.Cmd {
+func browserLoginCmd(cfg config.Config, loaderFactory func(config.Config) (Loader, error)) tea.Cmd {
 	return func() tea.Msg {
-		return browserLoginOpenedMsg{err: openBrowser(deezerLoginURL())}
+		arl, err := auth.BrowserLogin(context.Background(), auth.BrowserLoginOptions{})
+		if err != nil {
+			return loginFailedMsg{message: fmt.Sprintf("Browser login failed: %v", err)}
+		}
+		cfg.ARL = arl
+		if loaderFactory == nil {
+			loaderFactory = defaultLoaderFactory
+		}
+		loader, err := loaderFactory(cfg)
+		if err != nil {
+			return loginFailedMsg{message: fmt.Sprintf("Login error: %v", err)}
+		}
+		if _, err := loader.Bootstrap(context.Background()); err != nil {
+			return loginFailedMsg{message: fmt.Sprintf("Login validation failed: %v", err)}
+		}
+		return loginSucceededMsg{cfg: cfg, loader: loader}
 	}
-}
-
-func deezerLoginURL() string {
-	return "https://www.deezer.com/login?redirect=%2Faccount"
-}
-
-func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch goruntime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	return cmd.Start()
 }
 
 func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, enableVisualizer bool, events chan tea.Msg) tea.Cmd {
@@ -3614,17 +3576,13 @@ func (m Model) renderLoginScreen() string {
 	switch {
 	case m.loginLoading:
 		lines = append(lines,
-			centerText(paint("Validating login...", activePalette.Aqua, ""), m.width),
+			centerText(paint("Complete Deezer login in the browser.", activePalette.Aqua, ""), m.width),
+			centerText(paint("This window will continue automatically after login succeeds.", activePalette.TextMuted, ""), m.width),
 		)
 	case m.loginConfirmOpen:
 		lines = append(lines,
 			centerText(paint("Press Enter to open Deezer login in your browser.", activePalette.Text, ""), m.width),
 			centerText(paint("Press Esc to return if you already have a working session.", activePalette.TextMuted, ""), m.width),
-		)
-	case m.loginBrowserOpen:
-		lines = append(lines,
-			centerText(paint("Complete login in the browser, then return here.", activePalette.Text, ""), m.width),
-			centerText(paint("Press Enter to validate the saved session, or P for manual ARL fallback.", activePalette.TextMuted, ""), m.width),
 		)
 	default:
 		input := auth.MaskARL(m.loginInput)
