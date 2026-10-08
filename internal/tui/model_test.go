@@ -184,6 +184,99 @@ func TestViewShowsLoadingLogoBeforeInitialCollectionLoad(t *testing.T) {
 	}
 }
 
+func TestViewShowsLoginScreenWhenARLMissing(t *testing.T) {
+	model := NewWithConfig(config.Default())
+	model.width = 120
+	model.height = 40
+
+	view := model.View()
+	if view.WindowTitle != "deezer-tui login" {
+		t.Fatalf("unexpected login window title %q", view.WindowTitle)
+	}
+	if !strings.Contains(view.Content, "Sign in with Deezer") {
+		t.Fatal("expected login view to be shown")
+	}
+}
+
+func TestLoginInputValidatesSavesAndBootstraps(t *testing.T) {
+	model := NewWithConfig(config.Default())
+	model.loginConfirmOpen = false
+	model.loaderFactory = func(cfg config.Config) (Loader, error) {
+		if cfg.ARL != "token-value" {
+			t.Fatalf("expected normalized ARL, got %q", cfg.ARL)
+		}
+		return &fakeLoader{bootstrap: BootstrapData{Playlists: []app.Playlist{{ID: "1", Title: "Playlist"}}}}, nil
+	}
+	var saved []config.Config
+	model.saveConfig = func(cfg config.Config) error {
+		saved = append(saved, cfg)
+		return nil
+	}
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "Cookie: sid=session; arl=token-value"}))
+	model = nextModel.(Model)
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	model = nextModel.(Model)
+
+	if !model.loginLoading {
+		t.Fatal("expected login validation to start")
+	}
+	msg := cmd()
+	nextModel, cmd = model.Update(msg)
+	model = nextModel.(Model)
+
+	if model.loginActive {
+		t.Fatal("expected login mode to close after successful validation")
+	}
+	if len(saved) != 1 || saved[0].ARL != "token-value" {
+		t.Fatalf("expected normalized ARL to be saved, got %#v", saved)
+	}
+	if got := firstNonTickMsg(cmd); got == nil {
+		t.Fatal("expected successful login to start bootstrap/loading commands")
+	}
+}
+
+func TestOpenLoginShortcutEntersLoginModeWithExistingSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.ARL = "existing-token"
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, &fakePlaybackRuntime{})
+	model.ready = true
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "O"}))
+	updated := nextModel.(Model)
+
+	if !updated.loginActive {
+		t.Fatal("expected O to enter login mode")
+	}
+	if !updated.loginConfirmOpen {
+		t.Fatal("expected O to ask for browser-open confirmation")
+	}
+	if updated.loginInput != "" {
+		t.Fatalf("expected login input to be cleared, got %q", updated.loginInput)
+	}
+	if !strings.Contains(updated.app.StatusMessage, "Press Enter") {
+		t.Fatalf("expected login prompt status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestLoginConfirmationEnterStartsBrowserLogin(t *testing.T) {
+	model := NewWithConfig(config.Default())
+	model.loginConfirmOpen = true
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+
+	if updated.loginConfirmOpen {
+		t.Fatal("expected confirmation state to clear")
+	}
+	if !updated.loginLoading {
+		t.Fatal("expected browser login to start loading")
+	}
+	if cmd == nil {
+		t.Fatal("expected browser login command")
+	}
+}
+
 func TestInitialLoadFailureLeavesLoadingScreen(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.ready = false
