@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	cellansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/sfate/deezer-tui/internal/app"
+	"github.com/sfate/deezer-tui/internal/auth"
 	"github.com/sfate/deezer-tui/internal/colorscheme"
 	"github.com/sfate/deezer-tui/internal/config"
 	"github.com/sfate/deezer-tui/internal/deezer"
@@ -129,6 +131,19 @@ type scheduledPlaybackMsg struct {
 	requestID int
 }
 
+type loginSucceededMsg struct {
+	cfg    config.Config
+	loader Loader
+}
+
+type loginFailedMsg struct {
+	message string
+}
+
+type browserLoginOpenedMsg struct {
+	err error
+}
+
 type artworkLoadedMsg struct {
 	url string
 	art string
@@ -146,6 +161,7 @@ type Model struct {
 	runtime           PlayerRuntime
 	session           PlaybackSession
 	playbackEvents    chan tea.Msg
+	loaderFactory     func(config.Config) (Loader, error)
 	progressBaseMS    uint64
 	progressSince     time.Time
 	progressActive    bool
@@ -178,6 +194,9 @@ type Model struct {
 	prebufferTicking  bool
 	visualizerBands   []uint8
 	visualizerPeaks   []float64
+	loginActive       bool
+	loginInput        string
+	loginLoading      bool
 	perfLogPath       string
 	perfLastReport    time.Time
 	perfMsgCounts     map[string]int
@@ -195,13 +214,16 @@ func NewWithConfig(cfg config.Config) Model {
 	state := app.New(cfg)
 
 	var loader Loader
-	status := "Set ARL in ~/.deezer-tui-config.json to load Deezer data"
+	loginActive := strings.TrimSpace(cfg.ARL) == ""
+	status := "Login required: paste ARL or Cookie header"
 	if strings.TrimSpace(cfg.ARL) != "" {
 		deezerLoader, err := NewDeezerLoader(cfg)
 		if err != nil {
-			status = fmt.Sprintf("Deezer client error: %v", err)
+			loginActive = true
+			status = fmt.Sprintf("Login required: %v", err)
 		} else {
 			loader = deezerLoader
+			loginActive = false
 			status = "Loading Deezer library..."
 		}
 	}
@@ -212,6 +234,7 @@ func NewWithConfig(cfg config.Config) Model {
 		loader:            loader,
 		runtime:           newPlayerRuntime(loader),
 		playbackEvents:    make(chan tea.Msg, 32),
+		loaderFactory:     defaultLoaderFactory,
 		saveConfig:        config.Save,
 		artCache:          map[string]string{},
 		artCacheOrder:     []string{},
@@ -220,6 +243,7 @@ func NewWithConfig(cfg config.Config) Model {
 		perfLogPath:       perfLogPathFromEnv(),
 		perfMsgCounts:     map[string]int{},
 		ready:             loader == nil,
+		loginActive:       loginActive,
 	}
 }
 
@@ -238,6 +262,7 @@ func NewWithLoader(cfg config.Config, loader Loader) Model {
 		loader:            loader,
 		runtime:           newPlayerRuntime(loader),
 		playbackEvents:    make(chan tea.Msg, 32),
+		loaderFactory:     defaultLoaderFactory,
 		saveConfig:        config.Save,
 		artCache:          map[string]string{},
 		artCacheOrder:     []string{},
@@ -257,7 +282,7 @@ func NewWithLoaderAndRuntime(cfg config.Config, loader Loader, runtime PlayerRun
 
 func (m Model) Init() tea.Cmd {
 	mediaCmd := m.listenMediaControlCmd()
-	if m.loader == nil {
+	if m.loginActive || m.loader == nil {
 		return mediaCmd
 	}
 	return tea.Batch(bootstrapCmd(m.loader), loadingTickCmd(), mediaCmd)
@@ -266,6 +291,34 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.recordPerfMsg(msg)
 	switch msg := msg.(type) {
+	case loginSucceededMsg:
+		m.app.Config = msg.cfg
+		m.loader = msg.loader
+		m.runtime = newPlayerRuntime(msg.loader)
+		m.loginActive = false
+		m.loginLoading = false
+		m.loginInput = ""
+		m.ready = false
+		m.app.StatusMessage = "Login saved. Loading Deezer library..."
+		if m.saveConfig != nil {
+			if err := m.saveConfig(m.app.Config); err != nil {
+				m.app.StatusMessage = fmt.Sprintf("Login validated, but save failed: %v", err)
+				m.ready = true
+				return m, nil
+			}
+		}
+		return m, tea.Batch(bootstrapCmd(m.loader), loadingTickCmd(), m.listenMediaControlCmd())
+	case loginFailedMsg:
+		m.loginLoading = false
+		m.app.StatusMessage = msg.message
+		return m, nil
+	case browserLoginOpenedMsg:
+		if msg.err != nil {
+			m.app.StatusMessage = fmt.Sprintf("Browser login error: %v", msg.err)
+		} else {
+			m.app.StatusMessage = "Browser opened. After signing in, paste ARL or Cookie header here."
+		}
+		return m, nil
 	case bootstrapLoadedMsg:
 		m.app.Playlists = msg.playlists
 		m.app.PlaylistState.Select(intPtr(0))
@@ -562,6 +615,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyPressMsg:
+		if m.loginActive {
+			return m, m.handleLoginInput(msg)
+		}
 		if m.app.IsSearching {
 			return m, m.handleSearchInput(msg)
 		}
@@ -652,6 +708,13 @@ func (m Model) View() tea.View {
 		view := tea.NewView("Loading deezer-tui...")
 		view.AltScreen = true
 		view.WindowTitle = "deezer-tui"
+		return view
+	}
+
+	if m.loginActive {
+		view := tea.NewView(fillBackground(m.renderLoginScreen(), m.width))
+		view.AltScreen = true
+		view.WindowTitle = "deezer-tui login"
 		return view
 	}
 
@@ -1168,6 +1231,52 @@ func (m *Model) handleSearchInput(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	if len(msg.Text) > 0 {
 		m.app.SearchQuery += msg.Text
+	}
+	return nil
+}
+
+func (m *Model) handleLoginInput(msg tea.KeyPressMsg) tea.Cmd {
+	if m.loginLoading {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return tea.Quit
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return tea.Quit
+	case "ctrl+u":
+		m.loginInput = ""
+		m.app.StatusMessage = "Login input cleared"
+		return nil
+	case "backspace":
+		m.loginInput = trimLastRune(m.loginInput)
+		return nil
+	case "enter":
+		input := strings.TrimSpace(m.loginInput)
+		if input == "" {
+			m.app.StatusMessage = "Paste ARL or Cookie header, then press Enter"
+			return nil
+		}
+		arl, err := auth.NormalizeARL(input)
+		if err != nil {
+			m.app.StatusMessage = fmt.Sprintf("Login input error: %v", err)
+			return nil
+		}
+		cfg := m.app.Config
+		cfg.ARL = arl
+		m.loginLoading = true
+		m.app.StatusMessage = fmt.Sprintf("Validating login %s...", auth.MaskARL(arl))
+		return validateLoginCmd(cfg, m.loaderFactory)
+	case "o":
+		m.app.StatusMessage = "Opening Deezer login in browser..."
+		return openBrowserLoginCmd()
+	}
+
+	if len(msg.Text) > 0 {
+		m.loginInput += msg.Text
 	}
 	return nil
 }
@@ -2458,6 +2567,45 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	}
 }
 
+func defaultLoaderFactory(cfg config.Config) (Loader, error) {
+	return NewDeezerLoader(cfg)
+}
+
+func validateLoginCmd(cfg config.Config, loaderFactory func(config.Config) (Loader, error)) tea.Cmd {
+	if loaderFactory == nil {
+		loaderFactory = defaultLoaderFactory
+	}
+	return func() tea.Msg {
+		loader, err := loaderFactory(cfg)
+		if err != nil {
+			return loginFailedMsg{message: fmt.Sprintf("Login error: %v", err)}
+		}
+		if _, err := loader.Bootstrap(context.Background()); err != nil {
+			return loginFailedMsg{message: fmt.Sprintf("Login validation failed: %v", err)}
+		}
+		return loginSucceededMsg{cfg: cfg, loader: loader}
+	}
+}
+
+func openBrowserLoginCmd() tea.Cmd {
+	return func() tea.Msg {
+		return browserLoginOpenedMsg{err: openBrowser("https://www.deezer.com/login")}
+	}
+}
+
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
+}
+
 func startPlaybackCmdWithEvents(playID int, trackID string, runtime PlayerRuntime, quality deezer.AudioQuality, seekMS uint64, enableVisualizer bool, events chan tea.Msg) tea.Cmd {
 	if runtime == nil {
 		return nil
@@ -3363,6 +3511,35 @@ func (m Model) renderLoadingScreen() string {
 		lines = append(lines, centerText(paint(line, activePalette.Aqua, ""), m.width))
 	}
 	lines = append(lines, centerText(paint(strings.TrimSpace(m.app.StatusMessage), activePalette.TextMuted, ""), m.width))
+	return verticalCenter(strings.Join(lines, "\n"), m.height)
+}
+
+func (m Model) renderLoginScreen() string {
+	status := strings.TrimSpace(m.app.StatusMessage)
+	if status == "" {
+		status = "Paste ARL or Cookie header"
+	}
+	input := auth.MaskARL(m.loginInput)
+	if strings.Contains(m.loginInput, "arl=") {
+		input = "Cookie header pasted"
+	}
+	if input == "" {
+		input = "Waiting for login input"
+	}
+	if m.loginLoading {
+		input = "Validating login..."
+	}
+
+	lines := []string{
+		centerText(paint("deezer-tui", activePalette.Purple, ""), m.width),
+		"",
+		centerText(paint("Sign in with Deezer", activePalette.TextStrong, ""), m.width),
+		centerText(paint("Press o to open Deezer, then paste ARL or Cookie header and press Enter.", activePalette.Text, ""), m.width),
+		centerText(paint("Press Ctrl+U to clear, q to quit.", activePalette.TextMuted, ""), m.width),
+		"",
+		centerText(paint(input, activePalette.Aqua, ""), m.width),
+		centerText(paint(status, activePalette.TextMuted, ""), m.width),
+	}
 	return verticalCenter(strings.Join(lines, "\n"), m.height)
 }
 
