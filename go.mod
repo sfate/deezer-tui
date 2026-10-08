@@ -3,16 +3,16 @@ module github.com/sfate/deezer-tui
 go 1.27.1
 
 require (
-	charm.land/bubbletea/v2 v2.0.6
-	github.com/charmbracelet/x/ansi v0.11.7
+	charm.land/bubbletea/v2 v2.0.10
+	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/faiface/beep v1.1.0
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/crypto v0.50.0
+	golang.org/x/crypto v0.57.0
 )
 
 require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -22,7 +22,7 @@ require (
 	github.com/hajimehoshi/oto v0.7.1 // indirect
 	github.com/icza/bitio v1.0.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
-	github.com/mattn/go-runewidth v0.0.23 // indirect
+	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/mewkiz/flac v1.0.7 // indirect
 	github.com/mewkiz/pkg v0.0.0-20190919212034-518ade7978e2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
@@ -32,6 +32,6 @@ require (
 	golang.org/x/exp/shiny v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/image v0.39.0 // indirect
 	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
