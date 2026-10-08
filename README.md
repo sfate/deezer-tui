@@ -6,7 +6,7 @@ TUI client for Deezer, written on Go, based on Bubble Tea.
 
 ## Features
 
-- Deezer [ARL login](https://www.dumpmedia.com/deezplus/deezer-arl.html#part2) stored per [config](#Configuration)
+- First-run Deezer login with browser-assisted ARL/Cookie import
 - Browse Home, Flow, Explore, Favorites, and user playlists
 - Search tracks, playlists, and artists
 - Queue playback with next/previous controls
@@ -44,6 +44,7 @@ I                  Raise playback quality
 + / -              Volume up/down
 S                  Toggle Favorites sort direction
 /                  Search
+O                  Open/change Deezer login
 Esc                Leave search/settings
 Q                  Quit
 ```
@@ -83,6 +84,19 @@ make audit
 make test
 ```
 
+## Login
+
+On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits. If you already have a saved session and want to replace it, press `O` from the app to open the same login flow.
+
+Press `Enter` to confirm opening Deezer in a temporary browser session. After signing in, return to the app. It will capture the Deezer session from that temporary browser, validate it, save it, and load your library automatically.
+
+If a supported Chromium browser is not available, press `P` from the login confirmation screen to use the manual fallback with either:
+
+- a Deezer `arl` value
+- a copied browser `Cookie` header containing `arl=...`
+
+After validation succeeds, the app stores the ARL in the config file and loads your Deezer library. The token is masked in the UI while you type or paste it.
+
 ## Configuration
 
 The app reads:
@@ -91,15 +105,13 @@ The app reads:
 ~/.deezer-tui-config.json
 ```
 
-At minimum, set a valid Deezer `arl` value:
+The app creates and updates this file after a successful login, and fills defaults for missing settings. You can still edit it manually if you need to move an existing session between machines:
 
 ```json
 {
   "arl": "your_deezer_arl"
 }
 ```
-
-The app will fill defaults for missing settings.
 
 ## Colors
 
@@ -117,7 +129,6 @@ Theme can be set in the config file or switched in-app. The default theme is Aet
 
 ## TODO
 
-- [] Add login screen to get and save ARL from user input
 - [] Add Linux MPRIS/media-key support behind the same media-control abstraction used for macOS
 - [] Add lyrics loading and a lyrics view
 - [] Improve FLAC seeking, or keep documenting FLAC as restart-only for seek/quality transitions
