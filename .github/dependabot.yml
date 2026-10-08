@@ -1,27 +1,23 @@
 version: 2
 updates:
-  - package-ecosystem: gomod
-    directory: /
+  - package-ecosystem: "gomod"
+    directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-      time: "09:00"
-      timezone: Europe/Warsaw
-    open-pull-requests-limit: 5
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
+      interval: "weekly"
+    open-pull-requests-limit: 9
+    rebase-strategy: "disabled"
 
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-      time: "09:00"
-      timezone: Europe/Warsaw
-    open-pull-requests-limit: 5
     groups:
-      github-actions:
+      aws:
         patterns:
-          - "*"
+          - "github.com/aws/*"
+        update-types:
+          - minor
+          - patch
+
+      x:
+        patterns:
+          - "golang.org/x/*"
+        update-types:
+          - minor
+          - patch
