@@ -1270,7 +1270,7 @@ func (m *Model) handleLoginInput(msg tea.KeyPressMsg) tea.Cmd {
 		m.loginLoading = true
 		m.app.StatusMessage = fmt.Sprintf("Validating login %s...", auth.MaskARL(arl))
 		return validateLoginCmd(cfg, m.loaderFactory)
-	case "o":
+	case "o", "O":
 		m.app.StatusMessage = "Opening Deezer login in browser..."
 		return openBrowserLoginCmd()
 	}
