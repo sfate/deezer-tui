@@ -28,6 +28,13 @@ This means a malgo prototype can start without replacing the macOS native media-
 
 Start with a non-Darwin malgo backend prototype behind the existing `player.Backend` contract. Do not replace the Darwin runtime in the first pass.
 
+The current prototype follows that shape:
+
+- `internal/player/malgo_backend.go` builds only with `!darwin && cgo`.
+- `internal/player/process_backend_malgo.go` selects malgo for non-Darwin cgo builds.
+- `internal/player/process_backend_other.go` keeps the Beep fallback for non-Darwin no-cgo builds.
+- Darwin builds remain on `internal/tui/playback_darwin.go`.
+
 That keeps macOS media controls safe because the native Swift helper remains responsible for:
 
 - Now Playing metadata
@@ -47,12 +54,21 @@ The backend needs to preserve:
 - natural finish callback behavior
 - visualizer band events where practical
 
-The most likely hard parts are decoding and buffering. The current Beep backend handles MP3/FLAC decoding and resampling. A malgo backend will still need decoded PCM input, so the first version can reuse existing decode logic or introduce a package-local decoder abstraction before writing frames to malgo.
+The most likely hard parts are decoding and buffering. The current Beep backend handles MP3/FLAC decoding and resampling. The prototype reuses the existing decode path, resamples to 48 kHz stereo, and writes float32 PCM frames into malgo.
 
 ## Risks
 
-- cgo becomes part of the non-Darwin audio path.
+- cgo becomes part of the default non-Darwin audio path.
 - Linux CI/build images may need confirmation that `-ldl` is available.
 - Visualizer behavior may need explicit preservation because Beep currently sits in the decoded stream path.
 - Full macOS migration should be a later, separate decision because it could affect native media controls.
 
+## Verification
+
+Run locally on macOS:
+
+```bash
+go test ./internal/player ./internal/tui ./internal/colorscheme
+```
+
+Linux+cgo should be verified in CI or on a Linux host because cross-cgo from macOS uses the macOS SDK and does not compile Linux runtime/cgo.
