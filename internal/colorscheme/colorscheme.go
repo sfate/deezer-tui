@@ -3,9 +3,11 @@ package colorscheme
 type Name string
 
 const (
-	Aetheria Name = "Aetheria"
-	Gruvbox  Name = "Gruvbox"
-	Winamp   Name = "Winamp"
+	Aetheria      Name = "Aetheria"
+	Gruvbox       Name = "Gruvbox"
+	Winamp        Name = "Winamp"
+	DeezerDark    Name = "DeezerDark"
+	DeezerClassic Name = "DeezerClassic"
 )
 
 type Palette struct {
@@ -84,6 +86,42 @@ var schemes = []Scheme{
 			Purple:         "#7b78bd",
 		},
 	},
+	{
+		Name:  DeezerDark,
+		Label: "Deezer Dark",
+		Palette: Palette{
+			BackgroundHard: "#06020d",
+			Background:     "#12091f",
+			Border:         "#4f2b78",
+			TextStrong:     "#ffffff",
+			Text:           "#eee8f7",
+			TextMuted:      "#9d8caf",
+			Yellow:         "#ffed00",
+			Blue:           "#a238ff",
+			Aqua:           "#00c7f2",
+			Green:          "#c2ff00",
+			Orange:         "#ef5466",
+			Purple:         "#a238ff",
+		},
+	},
+	{
+		Name:  DeezerClassic,
+		Label: "Deezer Classic",
+		Palette: Palette{
+			BackgroundHard: "#050505",
+			Background:     "#101014",
+			Border:         "#3b3b44",
+			TextStrong:     "#ffffff",
+			Text:           "#f3f3f4",
+			TextMuted:      "#9a9aa3",
+			Yellow:         "#ffed00",
+			Blue:           "#00c7f2",
+			Aqua:           "#c1f1fc",
+			Green:          "#c2ff00",
+			Orange:         "#ff0000",
+			Purple:         "#ff0092",
+		},
+	},
 }
 
 func All() []Scheme {
@@ -94,7 +132,7 @@ func All() []Scheme {
 
 func Normalize(name Name) Name {
 	switch name {
-	case Gruvbox, Winamp:
+	case Gruvbox, Winamp, DeezerDark, DeezerClassic:
 		return name
 	case Aetheria, "":
 		return Aetheria

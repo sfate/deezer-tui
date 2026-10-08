@@ -27,6 +27,22 @@ func TestLookupReturnsDeclaredPalette(t *testing.T) {
 	if scheme.Palette.Green != "#27ff57" {
 		t.Fatalf("expected winamp display green, got %s", scheme.Palette.Green)
 	}
+
+	scheme = Lookup(DeezerDark)
+	if scheme.Name != DeezerDark {
+		t.Fatalf("expected deezer dark scheme, got %q", scheme.Name)
+	}
+	if scheme.Palette.Purple != "#a238ff" {
+		t.Fatalf("expected deezer dark purple, got %s", scheme.Palette.Purple)
+	}
+
+	scheme = Lookup(DeezerClassic)
+	if scheme.Name != DeezerClassic {
+		t.Fatalf("expected deezer classic scheme, got %q", scheme.Name)
+	}
+	if scheme.Palette.Blue != "#00c7f2" {
+		t.Fatalf("expected deezer classic blue, got %s", scheme.Palette.Blue)
+	}
 }
 
 func TestNextCyclesSchemes(t *testing.T) {
@@ -36,11 +52,17 @@ func TestNextCyclesSchemes(t *testing.T) {
 	if got := Next(Gruvbox, 1); got != Winamp {
 		t.Fatalf("expected next gruvbox theme to be winamp, got %q", got)
 	}
-	if got := Next(Winamp, 1); got != Aetheria {
-		t.Fatalf("expected next winamp theme to wrap to aetheria, got %q", got)
+	if got := Next(Winamp, 1); got != DeezerDark {
+		t.Fatalf("expected next winamp theme to be deezer dark, got %q", got)
 	}
-	if got := Next(Aetheria, -1); got != Winamp {
-		t.Fatalf("expected previous aetheria theme to wrap to winamp, got %q", got)
+	if got := Next(DeezerDark, 1); got != DeezerClassic {
+		t.Fatalf("expected next deezer dark theme to be deezer classic, got %q", got)
+	}
+	if got := Next(DeezerClassic, 1); got != Aetheria {
+		t.Fatalf("expected next deezer classic theme to wrap to aetheria, got %q", got)
+	}
+	if got := Next(Aetheria, -1); got != DeezerClassic {
+		t.Fatalf("expected previous aetheria theme to wrap to deezer classic, got %q", got)
 	}
 }
 
