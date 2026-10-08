@@ -21,7 +21,7 @@ TUI client for Deezer, written on Go, based on Bubble Tea.
 - macOS Now Playing / media key integration through the native helper
 - macOS native playback helper for pause, resume, volume, and stop
 - Linux/other playback through the Go audio backend
-- Theme support: Aetheria and Gruvbox
+- Theme support: Aetheria, Gruvbox, Winamp, Deezer Dark, Deezer Classic, and Deezer Orange
 
 > [!NOTE]
 > Discord Rich Presence is intentionally not implemented.
@@ -115,7 +115,7 @@ The app creates and updates this file after a successful login, and fills defaul
 
 ## Colors
 
-Currently app has three themes: [Aetheria](https://github.com/JJDizz1L/aetheria), [Gruvbox](https://github.com/morhetz/gruvbox), and Winamp.
+Currently app has six themes: [Aetheria](https://github.com/JJDizz1L/aetheria), [Gruvbox](https://github.com/morhetz/gruvbox), Winamp, Deezer Dark, Deezer Classic, and Deezer Orange.
 Theme can be set in the config file or switched in-app. The default theme is Aetheria:
 ```json
 {

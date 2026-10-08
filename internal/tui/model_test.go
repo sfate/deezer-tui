@@ -467,6 +467,69 @@ func TestSettingsViewShowsEditableSettingsWithoutDiscord(t *testing.T) {
 	}
 }
 
+func TestEnterOnSettingsNavigationOpensSettings(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ActivePanel = app.ActivePanelNavigation
+	model.app.NavState.Select(intPtr(4))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected settings navigation to be handled without async command")
+	}
+	if !updated.app.ViewingSettings {
+		t.Fatal("expected settings view to open")
+	}
+	if updated.app.ActivePanel != app.ActivePanelMain {
+		t.Fatalf("expected main panel to be focused, got %v", updated.app.ActivePanel)
+	}
+	if updated.app.StatusMessage != "Settings" {
+		t.Fatalf("expected settings status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestKeyboardNavigationDownToSettingsOpensSettings(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ActivePanel = app.ActivePanelNavigation
+
+	for i := 0; i < 4; i++ {
+		nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+		model = nextModel.(Model)
+	}
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected settings navigation to be handled without async command")
+	}
+	if !updated.app.ViewingSettings {
+		t.Fatal("expected settings view to open after keyboard navigation")
+	}
+	if updated.app.ActivePanel != app.ActivePanelMain {
+		t.Fatalf("expected main panel to be focused, got %v", updated.app.ActivePanel)
+	}
+}
+
+func TestSpaceOnSettingsNavigationOpensSettings(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	model.app.ActivePanel = app.ActivePanelNavigation
+	model.app.NavState.Select(intPtr(4))
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeySpace}))
+	updated := nextModel.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected settings navigation to be handled without async command")
+	}
+	if !updated.app.ViewingSettings {
+		t.Fatal("expected space on settings navigation item to open settings")
+	}
+	if updated.app.ActivePanel != app.ActivePanelMain {
+		t.Fatalf("expected main panel to be focused, got %v", updated.app.ActivePanel)
+	}
+}
+
 func TestLibraryPlaylistsScrollUnderFixedBrowseRows(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	for i := 1; i <= 8; i++ {
