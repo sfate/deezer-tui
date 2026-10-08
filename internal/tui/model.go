@@ -982,7 +982,7 @@ func (m *Model) handleSpacebar() tea.Cmd {
 	}
 
 	switch m.app.ActivePanel {
-	case app.ActivePanelMain, app.ActivePanelSearch, app.ActivePanelQueue:
+	case app.ActivePanelNavigation, app.ActivePanelPlaylists, app.ActivePanelMain, app.ActivePanelSearch, app.ActivePanelQueue:
 		return m.handleEnter()
 	default:
 		if len(m.app.QueueTracks) > 0 && m.app.QueueIndex != nil && *m.app.QueueIndex < len(m.app.QueueTracks) {
