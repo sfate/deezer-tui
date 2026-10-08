@@ -8,6 +8,7 @@ const (
 	Winamp        Name = "Winamp"
 	DeezerDark    Name = "DeezerDark"
 	DeezerClassic Name = "DeezerClassic"
+	DeezerOrange  Name = "DeezerOrange"
 )
 
 type Palette struct {
@@ -122,6 +123,24 @@ var schemes = []Scheme{
 			Purple:         "#ff0092",
 		},
 	},
+	{
+		Name:  DeezerOrange,
+		Label: "Deezer Orange",
+		Palette: Palette{
+			BackgroundHard: "#080402",
+			Background:     "#160b05",
+			Border:         "#6d3214",
+			TextStrong:     "#fff7f0",
+			Text:           "#f4ddce",
+			TextMuted:      "#b48a72",
+			Yellow:         "#ffed00",
+			Blue:           "#00c7f2",
+			Aqua:           "#ffc2e5",
+			Green:          "#c2ff00",
+			Orange:         "#ff6a00",
+			Purple:         "#a238ff",
+		},
+	},
 }
 
 func All() []Scheme {
@@ -132,7 +151,7 @@ func All() []Scheme {
 
 func Normalize(name Name) Name {
 	switch name {
-	case Gruvbox, Winamp, DeezerDark, DeezerClassic:
+	case Gruvbox, Winamp, DeezerDark, DeezerClassic, DeezerOrange:
 		return name
 	case Aetheria, "":
 		return Aetheria
