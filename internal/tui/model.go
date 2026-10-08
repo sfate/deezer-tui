@@ -197,6 +197,8 @@ type Model struct {
 	loginActive       bool
 	loginInput        string
 	loginLoading      bool
+	loginConfirmOpen  bool
+	loginBrowserOpen  bool
 	perfLogPath       string
 	perfLastReport    time.Time
 	perfMsgCounts     map[string]int
@@ -244,6 +246,7 @@ func NewWithConfig(cfg config.Config) Model {
 		perfMsgCounts:     map[string]int{},
 		ready:             loader == nil,
 		loginActive:       loginActive,
+		loginConfirmOpen:  loginActive,
 	}
 }
 
@@ -708,10 +711,12 @@ func (m *Model) startLogin() {
 	m.loginActive = true
 	m.loginLoading = false
 	m.loginInput = ""
+	m.loginConfirmOpen = true
+	m.loginBrowserOpen = false
 	m.app.IsPlaying = false
 	m.app.IsSearching = false
 	m.app.SearchLoading = false
-	m.app.StatusMessage = "Paste ARL or Cookie header, or press O to open Deezer login"
+	m.app.StatusMessage = "Press Enter to open Deezer login in your browser"
 	m.syncMediaControl()
 }
 
@@ -1261,9 +1266,52 @@ func (m *Model) handleLoginInput(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 
+	if m.loginConfirmOpen {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return tea.Quit
+		case "esc":
+			m.cancelLogin()
+			return nil
+		case "enter":
+			m.loginConfirmOpen = false
+			m.loginBrowserOpen = true
+			m.app.StatusMessage = "Opening Deezer login in browser..."
+			return openBrowserLoginCmd()
+		}
+		return nil
+	}
+
+	if m.loginBrowserOpen {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return tea.Quit
+		case "esc":
+			m.cancelLogin()
+			return nil
+		case "enter":
+			if strings.TrimSpace(m.app.Config.ARL) == "" {
+				m.app.StatusMessage = "Browser login opened, but no saved ARL exists to validate"
+				return nil
+			}
+			cfg := m.app.Config
+			m.loginLoading = true
+			m.app.StatusMessage = fmt.Sprintf("Validating saved login %s...", auth.MaskARL(cfg.ARL))
+			return validateLoginCmd(cfg, m.loaderFactory)
+		case "p", "P":
+			m.loginBrowserOpen = false
+			m.app.StatusMessage = "Paste ARL or Cookie header, then press Enter"
+			return nil
+		}
+		return nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return tea.Quit
+	case "esc":
+		m.cancelLogin()
+		return nil
 	case "ctrl+u":
 		m.loginInput = ""
 		m.app.StatusMessage = "Login input cleared"
@@ -1288,14 +1336,30 @@ func (m *Model) handleLoginInput(msg tea.KeyPressMsg) tea.Cmd {
 		m.app.StatusMessage = fmt.Sprintf("Validating login %s...", auth.MaskARL(arl))
 		return validateLoginCmd(cfg, m.loaderFactory)
 	case "o", "O":
-		m.app.StatusMessage = "Opening Deezer login in browser..."
-		return openBrowserLoginCmd()
+		m.loginConfirmOpen = true
+		m.loginInput = ""
+		m.app.StatusMessage = "Press Enter to open Deezer login in your browser"
+		return nil
 	}
 
 	if len(msg.Text) > 0 {
 		m.loginInput += msg.Text
 	}
 	return nil
+}
+
+func (m *Model) cancelLogin() {
+	m.loginActive = false
+	m.loginLoading = false
+	m.loginInput = ""
+	m.loginConfirmOpen = false
+	m.loginBrowserOpen = false
+	m.app.StatusMessage = "Library"
+	if m.loader == nil {
+		m.loginActive = true
+		m.loginConfirmOpen = true
+		m.app.StatusMessage = "Login is required before loading Deezer"
+	}
 }
 
 func (m *Model) startSearch(query string) tea.Cmd {
@@ -2606,8 +2670,12 @@ func validateLoginCmd(cfg config.Config, loaderFactory func(config.Config) (Load
 
 func openBrowserLoginCmd() tea.Cmd {
 	return func() tea.Msg {
-		return browserLoginOpenedMsg{err: openBrowser("https://www.deezer.com/login")}
+		return browserLoginOpenedMsg{err: openBrowser(deezerLoginURL())}
 	}
+}
+
+func deezerLoginURL() string {
+	return "https://www.deezer.com/login?redirect=%2Faccount"
 }
 
 func openBrowser(url string) error {
@@ -3534,29 +3602,46 @@ func (m Model) renderLoadingScreen() string {
 func (m Model) renderLoginScreen() string {
 	status := strings.TrimSpace(m.app.StatusMessage)
 	if status == "" {
-		status = "Paste ARL or Cookie header"
-	}
-	input := auth.MaskARL(m.loginInput)
-	if strings.Contains(m.loginInput, "arl=") {
-		input = "Cookie header pasted"
-	}
-	if input == "" {
-		input = "Waiting for login input"
-	}
-	if m.loginLoading {
-		input = "Validating login..."
+		status = "Press Enter to open Deezer login in your browser"
 	}
 
 	lines := []string{
 		centerText(paint("deezer-tui", activePalette.Purple, ""), m.width),
 		"",
 		centerText(paint("Sign in with Deezer", activePalette.TextStrong, ""), m.width),
-		centerText(paint("Press o to open Deezer, then paste ARL or Cookie header and press Enter.", activePalette.Text, ""), m.width),
-		centerText(paint("Press Ctrl+U to clear, q to quit.", activePalette.TextMuted, ""), m.width),
-		"",
-		centerText(paint(input, activePalette.Aqua, ""), m.width),
-		centerText(paint(status, activePalette.TextMuted, ""), m.width),
 	}
+
+	switch {
+	case m.loginLoading:
+		lines = append(lines,
+			centerText(paint("Validating login...", activePalette.Aqua, ""), m.width),
+		)
+	case m.loginConfirmOpen:
+		lines = append(lines,
+			centerText(paint("Press Enter to open Deezer login in your browser.", activePalette.Text, ""), m.width),
+			centerText(paint("Press Esc to return if you already have a working session.", activePalette.TextMuted, ""), m.width),
+		)
+	case m.loginBrowserOpen:
+		lines = append(lines,
+			centerText(paint("Complete login in the browser, then return here.", activePalette.Text, ""), m.width),
+			centerText(paint("Press Enter to validate the saved session, or P for manual ARL fallback.", activePalette.TextMuted, ""), m.width),
+		)
+	default:
+		input := auth.MaskARL(m.loginInput)
+		if strings.Contains(m.loginInput, "arl=") {
+			input = "Cookie header pasted"
+		}
+		if input == "" {
+			input = "Waiting for login input"
+		}
+		lines = append(lines,
+			centerText(paint("Paste ARL or Cookie header, then press Enter.", activePalette.Text, ""), m.width),
+			centerText(paint("Press Ctrl+U to clear, Esc to return.", activePalette.TextMuted, ""), m.width),
+			"",
+			centerText(paint(input, activePalette.Aqua, ""), m.width),
+		)
+	}
+	lines = append(lines, "", centerText(paint(status, activePalette.TextMuted, ""), m.width))
 	return verticalCenter(strings.Join(lines, "\n"), m.height)
 }
 

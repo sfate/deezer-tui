@@ -88,12 +88,14 @@ make test
 
 On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits. If you already have a saved session and want to replace it, press `O` from the app to open the same login flow.
 
-Press `O` to open Deezer in your browser, sign in there, then paste either:
+Press `Enter` to confirm opening Deezer in your browser. After signing in, return to the app and press `Enter` again to validate the saved session.
+
+Direct browser login cannot silently export Deezer's web `arl` cookie to a terminal app. If you need to replace the saved ARL, press `P` from the post-browser login screen and paste either:
 
 - a Deezer `arl` value
 - a copied browser `Cookie` header containing `arl=...`
 
-Press `Enter` to validate the login. After validation succeeds, the app stores the ARL in the config file and loads your Deezer library. The token is masked in the UI while you type or paste it.
+After validation succeeds, the app stores the ARL in the config file and loads your Deezer library. The token is masked in the UI while you type or paste it.
 
 ## Configuration
 

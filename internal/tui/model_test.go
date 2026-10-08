@@ -200,6 +200,7 @@ func TestViewShowsLoginScreenWhenARLMissing(t *testing.T) {
 
 func TestLoginInputValidatesSavesAndBootstraps(t *testing.T) {
 	model := NewWithConfig(config.Default())
+	model.loginConfirmOpen = false
 	model.loaderFactory = func(cfg config.Config) (Loader, error) {
 		if cfg.ARL != "token-value" {
 			t.Fatalf("expected normalized ARL, got %q", cfg.ARL)
@@ -247,11 +248,32 @@ func TestOpenLoginShortcutEntersLoginModeWithExistingSession(t *testing.T) {
 	if !updated.loginActive {
 		t.Fatal("expected O to enter login mode")
 	}
+	if !updated.loginConfirmOpen {
+		t.Fatal("expected O to ask for browser-open confirmation")
+	}
 	if updated.loginInput != "" {
 		t.Fatalf("expected login input to be cleared, got %q", updated.loginInput)
 	}
-	if !strings.Contains(updated.app.StatusMessage, "Paste ARL") {
+	if !strings.Contains(updated.app.StatusMessage, "Press Enter") {
 		t.Fatalf("expected login prompt status, got %q", updated.app.StatusMessage)
+	}
+}
+
+func TestLoginConfirmationEnterOpensBrowserState(t *testing.T) {
+	model := NewWithConfig(config.Default())
+	model.loginConfirmOpen = true
+
+	nextModel, cmd := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	updated := nextModel.(Model)
+
+	if updated.loginConfirmOpen {
+		t.Fatal("expected confirmation state to clear")
+	}
+	if !updated.loginBrowserOpen {
+		t.Fatal("expected browser-open state")
+	}
+	if cmd == nil {
+		t.Fatal("expected browser open command")
 	}
 }
 
