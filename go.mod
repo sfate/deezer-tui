@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/faiface/beep v1.1.0
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/crypto v0.50.0
+	golang.org/x/crypto v0.57.0
 )
 
 require (
@@ -33,5 +33,5 @@ require (
 	golang.org/x/image v0.39.0 // indirect
 	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
