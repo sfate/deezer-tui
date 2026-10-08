@@ -44,7 +44,7 @@ I                  Raise playback quality
 + / -              Volume up/down
 S                  Toggle Favorites sort direction
 /                  Search
-O                  Open Deezer login in browser on the login screen
+O                  Open/change Deezer login
 Esc                Leave search/settings
 Q                  Quit
 ```
@@ -86,7 +86,7 @@ make test
 
 ## Login
 
-On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits.
+On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits. If you already have a saved session and want to replace it, press `O` from the app to open the same login flow.
 
 Press `O` to open Deezer in your browser, sign in there, then paste either:
 

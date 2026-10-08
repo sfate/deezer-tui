@@ -235,6 +235,26 @@ func TestLoginInputValidatesSavesAndBootstraps(t *testing.T) {
 	}
 }
 
+func TestOpenLoginShortcutEntersLoginModeWithExistingSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.ARL = "existing-token"
+	model := NewWithLoaderAndRuntime(cfg, &fakeLoader{}, &fakePlaybackRuntime{})
+	model.ready = true
+
+	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "O"}))
+	updated := nextModel.(Model)
+
+	if !updated.loginActive {
+		t.Fatal("expected O to enter login mode")
+	}
+	if updated.loginInput != "" {
+		t.Fatalf("expected login input to be cleared, got %q", updated.loginInput)
+	}
+	if !strings.Contains(updated.app.StatusMessage, "Paste ARL") {
+		t.Fatalf("expected login prompt status, got %q", updated.app.StatusMessage)
+	}
+}
+
 func TestInitialLoadFailureLeavesLoadingScreen(t *testing.T) {
 	model := NewWithLoader(config.Default(), &fakeLoader{})
 	model.ready = false

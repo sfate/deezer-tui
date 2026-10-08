@@ -667,6 +667,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.handleNext()
 		case "p":
 			return m, m.handlePrevious()
+		case "o", "O":
+			m.startLogin()
 		case "r":
 			m.cycleRepeatMode()
 		case ",":
@@ -696,6 +698,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *Model) startLogin() {
+	if m.session != nil {
+		m.session.Stop()
+		m.session = nil
+	}
+	m.loginActive = true
+	m.loginLoading = false
+	m.loginInput = ""
+	m.app.IsPlaying = false
+	m.app.IsSearching = false
+	m.app.SearchLoading = false
+	m.app.StatusMessage = "Paste ARL or Cookie header, or press O to open Deezer login"
+	m.syncMediaControl()
 }
 
 func (m Model) View() tea.View {
