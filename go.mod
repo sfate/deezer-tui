@@ -6,6 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.10
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/faiface/beep v1.1.0
+	github.com/gen2brain/malgo v0.11.26
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.57.0
 )
