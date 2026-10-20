@@ -36,6 +36,10 @@ type Backend interface {
 	Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error)
 }
 
+type SeekBackend interface {
+	StartAt(stream io.ReadSeeker, quality deezer.AudioQuality, initialMS uint64, handler EventHandler, onFinished func(error)) (Controller, error)
+}
+
 type Controller interface {
 	Pause()
 	Resume()
@@ -198,11 +202,6 @@ func runTrackPipeline(
 		effectiveSeekMS = trackDurationMS - 1
 	}
 
-	var seekTargetBytes int64
-	if contentLength > 0 {
-		seekTargetBytes = contentLength * int64(effectiveSeekMS) / int64(trackDurationMS)
-	}
-
 	if handler.OnPlaybackProgress != nil {
 		handler.OnPlaybackProgress(effectiveSeekMS, trackDurationMS)
 	}
@@ -217,7 +216,7 @@ func runTrackPipeline(
 			return nil
 		}
 		started = true
-		controller, err := backend.Start(buffer, quality, handler, func(playErr error) {
+		finished := func(playErr error) {
 			select {
 			case finishedCh <- playErr:
 			default:
@@ -225,7 +224,14 @@ func runTrackPipeline(
 			if playErr == nil && handler.OnPlaybackStopped != nil {
 				handler.OnPlaybackStopped()
 			}
-		})
+		}
+		var controller Controller
+		var err error
+		if seeker, ok := backend.(SeekBackend); ok {
+			controller, err = seeker.StartAt(buffer, quality, effectiveSeekMS, handler, finished)
+		} else {
+			controller, err = backend.Start(buffer, quality, handler, finished)
+		}
 		if err != nil {
 			return err
 		}
@@ -235,14 +241,10 @@ func runTrackPipeline(
 
 	var queuedBytes int
 	prebufferTarget := opts.PrebufferBytes
-	if contentLength > 0 {
-		remaining := int(contentLength - seekTargetBytes)
-		if remaining > 0 && remaining < prebufferTarget {
-			prebufferTarget = remaining
-		}
+	if contentLength > 0 && int(contentLength) < prebufferTarget {
+		prebufferTarget = int(contentLength)
 	}
 	reportBufferingProgress(handler, 0, prebufferTarget, BufferingStageDownloading)
-	var skippedBytes int64
 	pending := make([]byte, 0, opts.ChunkSize*2)
 	chunkIndex := 0
 	readBuf := make([]byte, 32*1024)
@@ -262,17 +264,6 @@ func runTrackPipeline(
 				return reportErr(handler, err)
 			}
 
-			if skippedBytes < seekTargetBytes {
-				remainingSkip := int(seekTargetBytes - skippedBytes)
-				if remainingSkip >= len(chunk) {
-					skippedBytes += int64(len(chunk))
-					chunkIndex++
-					continue
-				}
-				chunk = chunk[remainingSkip:]
-				skippedBytes = seekTargetBytes
-			}
-
 			queuedBytes += len(chunk)
 			reportBufferingProgress(handler, queuedBytes, prebufferTarget, BufferingStageDownloading)
 			select {
@@ -282,7 +273,7 @@ func runTrackPipeline(
 				return ctx.Err()
 			}
 
-			if !started && queuedBytes >= opts.PrebufferBytes {
+			if !started && queuedBytes >= prebufferTarget {
 				reportBufferingProgress(handler, prebufferTarget, prebufferTarget, BufferingStageReady)
 				if err := startBackend(); err != nil {
 					close(ch)
@@ -307,17 +298,6 @@ func runTrackPipeline(
 		if err := deezer.DecryptChunkInPlaceWithKey(trackKey[:], chunkIndex, tail); err != nil {
 			close(ch)
 			return reportErr(handler, err)
-		}
-		if skippedBytes < seekTargetBytes {
-			remainingSkip := int(seekTargetBytes - skippedBytes)
-			if remainingSkip >= len(tail) {
-				close(ch)
-				if !started {
-					return startBackend()
-				}
-				return nil
-			}
-			tail = tail[remainingSkip:]
 		}
 		select {
 		case ch <- tail:
