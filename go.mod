@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	charm.land/bubbletea/v2 v2.0.10
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/faiface/beep v1.1.0
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.58.0
@@ -21,8 +21,8 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.0 // indirect
 	github.com/hajimehoshi/oto v0.7.1 // indirect
 	github.com/icza/bitio v1.0.0 // indirect
-	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
-	github.com/mattn/go-runewidth v0.0.24 // indirect
+	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
+	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/mewkiz/flac v1.0.7 // indirect
 	github.com/mewkiz/pkg v0.0.0-20190919212034-518ade7978e2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
