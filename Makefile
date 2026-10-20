@@ -1,7 +1,8 @@
-.PHONY: lint audit test build ci
+.PHONY: lint audit test build dev-build ci
 
 BINARY_NAME ?= deezer-tui
 BUILD_OUTPUT ?= bin/$(BINARY_NAME)
+DEV_BUILD_OUTPUT ?= $(HOME)/.local/bin/$(BINARY_NAME)
 TEST_DIR ?= ./...
 TEST_CASE ?= ^.+$
 UNAME_S := $(shell uname -s)
@@ -29,5 +30,9 @@ ifeq ($(UNAME_S),Darwin)
 	printf "%s" "$$(shasum -a 256 $(MAC_HELPER_SRC) | awk '{print $$1}')" > $(MAC_HELPER_SUM)
 endif
 	go build -mod=readonly -o $(BUILD_OUTPUT) ./cmd/deezer-tui
+
+dev-build: build
+	mkdir -p "$(dir $(DEV_BUILD_OUTPUT))"
+	ln -sf "$(PWD)/$(BUILD_OUTPUT)" "$(DEV_BUILD_OUTPUT)"
 
 ci: lint audit test
