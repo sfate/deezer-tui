@@ -24,8 +24,25 @@ func TestSaveWritesConfigOwnerOnly(t *testing.T) {
 }
 
 func TestNormalizeDisplayModeFallsBackToOffForUnknownMode(t *testing.T) {
-	got := NormalizeDisplayMode(DisplayMode("spectrum"), true)
+	got := NormalizeDisplayMode(DisplayMode("unknown"), true)
 	if got != DisplayModeOff {
 		t.Fatalf("expected unknown display mode to fall back to off, got %q", got)
+	}
+}
+
+func TestNormalizeDisplayModeAcceptsVisualizerModes(t *testing.T) {
+	modes := []DisplayMode{
+		DisplayModeOff,
+		DisplayModeEqualizer,
+		DisplayModeSpectrum,
+		DisplayModeWaveform,
+		DisplayModeScope,
+	}
+	for _, mode := range modes {
+		t.Run(string(mode), func(t *testing.T) {
+			if got := NormalizeDisplayMode(mode, true); got != mode {
+				t.Fatalf("normalized mode = %q, want %q", got, mode)
+			}
+		})
 	}
 }

@@ -657,11 +657,11 @@ func TestSettingsDisplayPersists(t *testing.T) {
 
 	nextModel, _ := model.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	updated := nextModel.(Model)
-	if updated.app.Config.DisplayMode != config.DisplayModeOff {
-		t.Fatalf("expected display mode to cycle to off, got %s", updated.app.Config.DisplayMode)
+	if updated.app.Config.DisplayMode != config.DisplayModeSpectrum {
+		t.Fatalf("expected display mode to cycle to spectrum, got %s", updated.app.Config.DisplayMode)
 	}
-	if len(saved) != 1 || saved[0].DisplayMode != config.DisplayModeOff {
-		t.Fatalf("expected off display mode to be persisted, got %#v", saved)
+	if len(saved) != 1 || saved[0].DisplayMode != config.DisplayModeSpectrum {
+		t.Fatalf("expected spectrum display mode to be persisted, got %#v", saved)
 	}
 }
 
@@ -1883,9 +1883,54 @@ func TestDisplayPanelRendersModes(t *testing.T) {
 	model.app.IsPlaying = true
 	model.visualizerBands = []uint8{1, 3, 5, 7, 8, 6, 4, 2}
 
-	model.app.Config.DisplayMode = config.DisplayModeEqualizer
-	if display := model.renderDisplayBody(40, 9); !strings.ContainsAny(display, "█▓▒") || !strings.Contains(display, "\x1b[") {
-		t.Fatal("expected colored equalizer glyphs")
+	cases := []struct {
+		mode  config.DisplayMode
+		glyph string
+	}{
+		{mode: config.DisplayModeEqualizer, glyph: "█"},
+		{mode: config.DisplayModeSpectrum, glyph: "▓"},
+		{mode: config.DisplayModeWaveform, glyph: "█"},
+		{mode: config.DisplayModeScope, glyph: "●"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			model.app.Config.DisplayMode = tc.mode
+			display := model.renderDisplayBody(40, 9)
+			if !strings.Contains(display, tc.glyph) {
+				t.Fatalf("expected %s display to contain %q", tc.mode, tc.glyph)
+			}
+			if !strings.Contains(display, "\x1b[") {
+				t.Fatalf("expected colored %s display", tc.mode)
+			}
+		})
+	}
+}
+
+func TestDisplayModeCycleVisitsEveryMode(t *testing.T) {
+	want := []config.DisplayMode{
+		config.DisplayModeOff,
+		config.DisplayModeEqualizer,
+		config.DisplayModeSpectrum,
+		config.DisplayModeWaveform,
+		config.DisplayModeScope,
+		config.DisplayModeOff,
+	}
+	got := make([]config.DisplayMode, 1, len(want))
+	got[0] = config.DisplayModeOff
+	for range len(want) - 1 {
+		got = append(got, nextDisplayMode(got[len(got)-1], 1))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("mode %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestViewUsesAlternateScreen(t *testing.T) {
+	model := NewWithLoader(config.Default(), &fakeLoader{})
+	if view := model.View(); !view.AltScreen {
+		t.Fatal("expected Bubble Tea view to use the alternate screen buffer")
 	}
 }
 

@@ -59,6 +59,9 @@ type DisplayMode string
 const (
 	DisplayModeOff       DisplayMode = "off"
 	DisplayModeEqualizer DisplayMode = "equalizer"
+	DisplayModeSpectrum  DisplayMode = "spectrum"
+	DisplayModeWaveform  DisplayMode = "waveform"
+	DisplayModeScope     DisplayMode = "oscilloscope"
 )
 
 func Default() Config {
@@ -126,7 +129,7 @@ func Save(cfg Config) error {
 
 func NormalizeDisplayMode(mode DisplayMode, legacyEnabled bool) DisplayMode {
 	switch mode {
-	case DisplayModeOff, DisplayModeEqualizer:
+	case DisplayModeOff, DisplayModeEqualizer, DisplayModeSpectrum, DisplayModeWaveform, DisplayModeScope:
 		return mode
 	case "":
 		if !legacyEnabled {
