@@ -3072,7 +3072,49 @@ func (m Model) renderDisplayBody(width, height int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	return renderEqualizerDisplay(width, height, m.visualizerBands, m.visualizerPeaks)
+	switch mode {
+	case config.DisplayModeSpectrum:
+		return renderSpectrumDisplay(width, height, m.visualizerBands)
+	case config.DisplayModeWaveform:
+		return renderWaveformDisplay(width, height, m.visualizerBands)
+	case config.DisplayModeScope:
+		return renderScopeDisplay(width, height, m.visualizerBands)
+	default:
+		return renderEqualizerDisplay(width, height, m.visualizerBands, m.visualizerPeaks)
+	}
+}
+
+func renderSpectrumDisplay(width, height int, bands []uint8) string {
+	return renderEqualizerDisplay(width, height, bands, nil)
+}
+
+// The current event API provides frequency-band levels rather than PCM samples.
+// These two modes render that live envelope until a backend exposes sample data.
+func renderWaveformDisplay(width, height int, bands []uint8) string {
+	grid := blankDisplayGrid(width, height)
+	center := height / 2
+	for x := 0; x < width; x++ {
+		level := interpolatedBandLevel(bands, float64(x)*float64(max(0, len(bands)-1))/float64(max(1, width-1)))
+		amplitude := int(math.Round(level * float64(max(1, height/2))))
+		for y := max(0, center-amplitude); y <= min(height-1, center+amplitude); y++ {
+			grid[y][x] = displayCell{glyph: "█", color: equalizerColor(level, y, height)}
+		}
+	}
+	return displayGridString(grid)
+}
+
+func renderScopeDisplay(width, height int, bands []uint8) string {
+	grid := blankDisplayGrid(width, height)
+	center := height / 2
+	for x := 0; x < width; x++ {
+		phase := float64(x) / float64(max(1, width-1))
+		level := interpolatedBandLevel(bands, phase*float64(max(0, len(bands)-1)))
+		y := center - int(math.Round(math.Sin(phase*2*math.Pi)*level*float64(max(1, height/2))))
+		if y >= 0 && y < height {
+			grid[y][x] = displayCell{glyph: "●", color: equalizerColor(level, y, height)}
+		}
+	}
+	return displayGridString(grid)
 }
 
 func renderEqualizerDisplay(width, height int, bands []uint8, peaks []float64) string {
@@ -3443,6 +3485,9 @@ func nextDisplayMode(current config.DisplayMode, direction int) config.DisplayMo
 	modes := []config.DisplayMode{
 		config.DisplayModeOff,
 		config.DisplayModeEqualizer,
+		config.DisplayModeSpectrum,
+		config.DisplayModeWaveform,
+		config.DisplayModeScope,
 	}
 	current = config.NormalizeDisplayMode(current, true)
 	idx := 1
@@ -3464,6 +3509,12 @@ func displayModeLabel(mode config.DisplayMode) string {
 	switch config.NormalizeDisplayMode(mode, true) {
 	case config.DisplayModeOff:
 		return "Off"
+	case config.DisplayModeSpectrum:
+		return "Spectrum"
+	case config.DisplayModeWaveform:
+		return "Waveform"
+	case config.DisplayModeScope:
+		return "Oscilloscope"
 	default:
 		return "Equalizer"
 	}
