@@ -39,9 +39,17 @@ type fakeBackend struct {
 	mu         sync.Mutex
 	playedData []byte
 	stopped    bool
+	initialMS  uint64
 }
 
-func (b *fakeBackend) Start(stream io.ReadSeeker, _ deezer.AudioQuality, _ EventHandler, onFinished func(error)) (Controller, error) {
+func (b *fakeBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error) {
+	return b.StartAt(stream, quality, 0, handler, onFinished)
+}
+
+func (b *fakeBackend) StartAt(stream io.ReadSeeker, _ deezer.AudioQuality, initialMS uint64, _ EventHandler, onFinished func(error)) (Controller, error) {
+	b.mu.Lock()
+	b.initialMS = initialMS
+	b.mu.Unlock()
 	go func() {
 		data, err := io.ReadAll(stream)
 		if err != nil {
@@ -155,7 +163,7 @@ func TestStartTrackPipelineDecryptsAndStreamsAudio(t *testing.T) {
 	}
 }
 
-func TestStartTrackPipelineSeeksByDroppingInitialBytes(t *testing.T) {
+func TestStartTrackPipelinePassesInitialSeekTimeToBackend(t *testing.T) {
 	plaintext := bytes.Repeat([]byte("abcd"), 1024)
 	encrypted := encryptDeezerChunks(t, "42", plaintext)
 
@@ -191,11 +199,11 @@ func TestStartTrackPipelineSeeksByDroppingInitialBytes(t *testing.T) {
 
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if len(backend.playedData) >= len(plaintext) {
-		t.Fatalf("expected seek to reduce played bytes")
+	if backend.initialMS != 2000 {
+		t.Fatalf("expected backend seek time 2000ms, got %dms", backend.initialMS)
 	}
-	if bytes.Equal(backend.playedData, plaintext) {
-		t.Fatalf("expected seeked playback to differ from full plaintext")
+	if !bytes.Equal(backend.playedData, plaintext) {
+		t.Fatal("pipeline should pass the full decrypted stream so the decoder can seek by samples")
 	}
 }
 
