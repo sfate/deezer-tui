@@ -9,12 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sfate/deezer-tui/internal/deezer"
 	"github.com/faiface/beep"
 	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/flac"
 	"github.com/faiface/beep/mp3"
 	"github.com/faiface/beep/speaker"
+	"github.com/sfate/deezer-tui/internal/deezer"
 )
 
 const (
@@ -40,12 +40,20 @@ func NewBeepBackend() *BeepBackend {
 }
 
 func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, handler EventHandler, onFinished func(error)) (Controller, error) {
+	return b.StartAt(stream, quality, 0, handler, onFinished)
+}
+
+func (b *BeepBackend) StartAt(stream io.ReadSeeker, quality deezer.AudioQuality, initialMS uint64, handler EventHandler, onFinished func(error)) (Controller, error) {
 	if err := b.ensureSpeaker(); err != nil {
 		return nil, err
 	}
 
 	streamer, format, err := decodeStream(stream, quality)
 	if err != nil {
+		return nil, err
+	}
+	if err := seekDecodedStream(streamer, format, initialMS); err != nil {
+		_ = streamer.Close()
 		return nil, err
 	}
 
@@ -60,6 +68,8 @@ func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, h
 			SampleRate: b.targetSampleRate,
 			OnBands:    handler.OnAudioBands,
 		}
+	}
+	if visualizer != nil {
 		playback = visualizer
 	}
 
@@ -85,6 +95,21 @@ func (b *BeepBackend) Start(stream io.ReadSeeker, quality deezer.AudioQuality, h
 
 	speaker.Play(controller.sequence)
 	return controller, nil
+}
+
+func seekDecodedStream(streamer beep.StreamSeekCloser, format beep.Format, initialMS uint64) error {
+	if initialMS == 0 {
+		return nil
+	}
+	samples := format.SampleRate.N(time.Duration(initialMS) * time.Millisecond)
+	if seeker, ok := streamer.(beep.StreamSeeker); ok {
+		if err := seeker.Seek(samples); err != nil {
+			return fmt.Errorf("seek decoded audio: %w", err)
+		}
+	} else {
+		discardSamples(streamer, samples)
+	}
+	return nil
 }
 
 func (b *BeepBackend) ensureSpeaker() error {
