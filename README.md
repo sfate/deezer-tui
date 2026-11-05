@@ -86,7 +86,7 @@ make test
 
 ## Login
 
-On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits. If you already have a saved session and want to replace it, press `O` from the app to open the same login flow.
+On first launch, `deezer-tui` opens a login screen instead of requiring manual config edits. Saved sessions are validated on startup. If Deezer rejects a saved session, the login screen opens again. Other startup failures show an error with `Enter` to retry or `O` to sign in. If you already have a saved session and want to replace it, press `O` from the app to open the same login flow.
 
 Press `Enter` to confirm opening Deezer in a temporary browser session. After signing in, return to the app. It will capture the Deezer session from that temporary browser, validate it, save it, and load your library automatically.
 

@@ -2784,3 +2784,57 @@ func TestEnterOnSearchArtistStartsSearch(t *testing.T) {
 		t.Fatal("expected artist follow-up search results to load")
 	}
 }
+
+type failingBootstrapLoader struct {
+	*fakeLoader
+	err error
+}
+
+func (f *failingBootstrapLoader) Bootstrap(context.Context) (BootstrapData, error) {
+	return BootstrapData{}, f.err
+}
+
+func TestBootstrapFailureRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		login bool
+	}{
+		{"rejected session", fmt.Errorf("session: %w", deezer.ErrUnauthenticated), true},
+		{"network failure", errors.New("connection timed out"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.ARL = "saved-session"
+			loader := &failingBootstrapLoader{fakeLoader: &fakeLoader{}, err: tc.err}
+			model := NewWithLoader(cfg, loader)
+			updatedModel, _ := model.Update(bootstrapCmd(loader)())
+			updated := updatedModel.(Model)
+			if updated.loginActive != tc.login {
+				t.Fatalf("loginActive = %v, want %v", updated.loginActive, tc.login)
+			}
+			if tc.login {
+				if !updated.loginConfirmOpen || updated.loader != nil {
+					t.Fatal("expected required login with rejected loader removed")
+				}
+				updated.cancelLogin()
+				if !updated.loginActive {
+					t.Fatal("rejected session must not allow cancelling into library")
+				}
+			} else {
+				if !updated.ready || !strings.Contains(updated.app.StatusMessage, "Enter to retry") {
+					t.Fatal("expected retryable startup error")
+				}
+				updated.startLogin()
+				updated.cancelLogin()
+				_, cmd := updated.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				if cmd == nil {
+					t.Fatal("expected retry command")
+				}
+			}
+			if updated.app.Config.ARL != cfg.ARL {
+				t.Fatal("must preserve saved credentials until replacement")
+			}
+		})
+	}
+}

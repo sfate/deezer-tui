@@ -3,6 +3,7 @@ package deezer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,13 +61,44 @@ func TestFetchAPITokenBootstrapsSessionState(t *testing.T) {
 	}
 }
 
+func TestFetchAPITokenRejectsUnauthenticatedUser(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		user map[string]any
+	}{
+		{name: "missing user"},
+		{name: "missing user ID", user: map[string]any{}},
+		{name: "numeric zero", user: map[string]any{"USER_ID": 0}},
+		{name: "string zero", user: map[string]any{"USER_ID": "0"}},
+		{name: "invalid user ID", user: map[string]any{"USER_ID": "invalid"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"results": map[string]any{
+					"checkForm": "anonymous-api-token",
+					"USER":      tc.user,
+				}})
+			}))
+			defer server.Close()
+
+			client, err := NewClient("expired-arl", Options{GatewayURL: server.URL})
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			if _, err := client.FetchAPIToken(context.Background()); !errors.Is(err, ErrUnauthenticated) {
+				t.Fatalf("expected unauthenticated error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestFetchAPITokenUsesCustomUserAgent(t *testing.T) {
 	const userAgent = "deezer-tui-test-agent"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("User-Agent"); got != userAgent {
 			t.Fatalf("expected custom user agent %q, got %q", userAgent, got)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": map[string]any{"checkForm": "api-token"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": map[string]any{"checkForm": "api-token", "USER": map[string]any{"USER_ID": 42}}})
 	}))
 	defer server.Close()
 
