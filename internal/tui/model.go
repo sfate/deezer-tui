@@ -40,6 +40,10 @@ const (
 	artworkCacheLimit                    = 40
 )
 
+type bootstrapFailedMsg struct {
+	err error
+}
+
 type bootstrapLoadedMsg struct {
 	playlists []app.Playlist
 }
@@ -151,6 +155,7 @@ type mediaControlCommandMsg struct {
 }
 
 type Model struct {
+	bootstrapFailed   bool
 	app               *app.App
 	loader            Loader
 	runtime           PlayerRuntime
@@ -289,6 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.recordPerfMsg(msg)
 	switch msg := msg.(type) {
 	case loginSucceededMsg:
+		m.bootstrapFailed = false
 		m.app.Config = msg.cfg
 		m.loader = msg.loader
 		m.runtime = newPlayerRuntime(msg.loader)
@@ -309,7 +315,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loginLoading = false
 		m.app.StatusMessage = msg.message
 		return m, nil
+	case bootstrapFailedMsg:
+		m.ready = true
+		if errors.Is(msg.err, deezer.ErrUnauthenticated) {
+			m.startLogin()
+			m.bootstrapFailed = false
+			m.shutdownRuntime()
+			m.loader = nil
+			m.runtime = nil
+			m.app.StatusMessage = "Saved Deezer session expired or was rejected. Press Enter to sign in again"
+		} else {
+			m.bootstrapFailed = true
+			m.app.StatusMessage = fmt.Sprintf("Bootstrap error: %v. Press Enter to retry or O to sign in", msg.err)
+		}
+		return m, nil
 	case bootstrapLoadedMsg:
+		m.bootstrapFailed = false
 		m.app.Playlists = msg.playlists
 		m.app.PlaylistState.Select(intPtr(0))
 		m.app.StatusMessage = fmt.Sprintf("Loaded %d playlists", len(msg.playlists))
@@ -610,6 +631,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.app.IsSearching {
 			return m, m.handleSearchInput(msg)
+		}
+		if m.bootstrapFailed && msg.String() == "enter" {
+			m.bootstrapFailed = false
+			m.ready = false
+			m.app.StatusMessage = "Loading Deezer library..."
+			return m, tea.Batch(bootstrapCmd(m.loader), loadingTickCmd())
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -1319,6 +1346,9 @@ func (m *Model) cancelLogin() {
 	m.loginInput = ""
 	m.loginConfirmOpen = false
 	m.app.StatusMessage = "Library"
+	if m.bootstrapFailed {
+		m.app.StatusMessage = "Library could not load. Press Enter to retry or O to sign in"
+	}
 	if m.loader == nil {
 		m.loginActive = true
 		m.loginConfirmOpen = true
@@ -2606,7 +2636,7 @@ func bootstrapCmd(loader Loader) tea.Cmd {
 	return func() tea.Msg {
 		data, err := loader.Bootstrap(context.Background())
 		if err != nil {
-			return loadFailedMsg{message: fmt.Sprintf("Bootstrap error: %v", err)}
+			return bootstrapFailedMsg{err: err}
 		}
 		return bootstrapLoadedMsg{playlists: data.Playlists}
 	}

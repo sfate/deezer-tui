@@ -18,6 +18,9 @@ import (
 	"time"
 )
 
+// ErrUnauthenticated indicates that the saved session has no authenticated user.
+var ErrUnauthenticated = errors.New("deezer session is not authenticated; please sign in again")
+
 const (
 	defaultGatewayURL = "https://www.deezer.com/ajax/gw-light.php"
 	defaultMediaURL   = "https://media.deezer.com/v1/get_url"
@@ -190,6 +193,14 @@ func (c *Client) FetchAPIToken(ctx context.Context) (string, error) {
 	c.lovedTracksID = getString(user, "LOVEDTRACKS_ID")
 	c.apiToken = getString(results, "checkForm")
 
+	userID, userErr := strconv.ParseUint(c.userID, 10, 64)
+	if userErr != nil || userID == 0 {
+		c.apiToken = ""
+		c.userID = ""
+		c.licenseToken = ""
+		c.lovedTracksID = ""
+		return "", ErrUnauthenticated
+	}
 	if c.apiToken == "" {
 		return "", errors.New("gateway response did not contain checkForm api token")
 	}
