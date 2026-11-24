@@ -3,7 +3,7 @@ module github.com/sfate/deezer-tui
 go 1.27.4
 
 require (
-	charm.land/bubbletea/v2 v2.1.0
+	charm.land/bubbletea/v2 v2.1.1
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/faiface/beep v1.1.0
 	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
