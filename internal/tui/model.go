@@ -766,7 +766,7 @@ func (m Model) View() tea.View {
 	sidebarWidth := min(28, max(22, m.width/5))
 	// Reserve width for Library and Queue. At narrow sizes Flow and Display
 	// are expendable; at the smallest sizes Queue is too.
-	hideFlow := m.width < 108 && !(m.height >= 32 && m.height < 48)
+	hideFlow := m.width < 108 && (m.height < 32 || m.height >= 48)
 	hideDisplay := m.width < 108
 	hideQueue := m.height < 29 || (m.width < 82 && m.height < 30)
 	stackPanels := m.height >= 32 && m.height < 48
