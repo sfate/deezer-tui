@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -16,6 +17,17 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 )
+
+//go:embed no-artwork.png
+var noArtworkImage []byte
+
+func defaultArtworkANSI() string {
+	img, _, err := image.Decode(bytes.NewReader(noArtworkImage))
+	if err != nil {
+		return ""
+	}
+	return renderArtworkANSI(img, 14, 14)
+}
 
 func fetchArtworkCmd(url string, width, height int) tea.Cmd {
 	if strings.TrimSpace(url) == "" {
