@@ -1784,6 +1784,111 @@ func TestViewUsesCompactViewWhenQueueWouldBeTooShort(t *testing.T) {
 	}
 }
 
+func TestViewHidesFlowAndDisplayWhenWidthIsNarrow(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 100
+	model.height = 40
+	model.app.Config.DisplayMode = config.DisplayModeEqualizer
+	model.app.Config.DisplayEnabled = true
+	model.visualizerBands = []uint8{1, 2, 3, 4}
+	model.ready = true
+
+	view := model.View().Content
+	sidebar := model.renderSidebarWithFlow(20, 20, false)
+	if strings.Contains(sidebar, "Flow") {
+		t.Fatal("expected Flow navigation item to be hidden")
+	}
+	if strings.Contains(view, "Display") {
+		t.Fatal("expected Display section hidden at narrow width")
+	}
+	if !strings.Contains(view, "Library") || !strings.Contains(view, "Queue") {
+		t.Fatal("expected Library and Queue sections to remain visible")
+	}
+}
+
+func TestViewHidesQueueWhenBothDimensionsAreVerySmall(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 78
+	model.height = 26
+	model.ready = true
+
+	view := model.View().Content
+	queuePanel := model.renderQueue(32, 12)
+	if strings.Contains(view, "Queue") && strings.Contains(queuePanel, "Queue") {
+		t.Fatal("expected Queue section hidden when both dimensions are very small")
+	}
+	if !strings.Contains(view, "Status") || !strings.Contains(view, "Library") {
+		t.Fatal("expected Status and Library sections to remain visible")
+	}
+}
+
+func TestViewHidesQueueWhenHeightIsShort(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 120
+	model.height = 28
+	model.ready = true
+
+	view := model.View().Content
+	if strings.Contains(view, "Queue") {
+		t.Fatal("expected Queue section hidden when height is short")
+	}
+	if !strings.Contains(view, "Status") {
+		t.Fatal("expected Status to remain visible when Queue is hidden")
+	}
+}
+
+func TestShortHeightStacksStatusAboveQueue(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 120
+	model.height = 44
+	model.ready = true
+
+	view := model.View().Content
+	queueIndex := strings.Index(view, "Queue")
+	statusIndex := strings.Index(view, "Status")
+	if statusIndex < 0 || queueIndex < 0 || statusIndex >= queueIndex {
+		t.Fatalf("expected Status above Queue at short height, got status=%d queue=%d", statusIndex, queueIndex)
+	}
+	if got := len(strings.Split(view, "\n")); got != model.height {
+		t.Fatalf("expected short layout to fit terminal height, got %d lines for height %d", got, model.height)
+	}
+}
+
+func TestShortHeightStackKeepsFlowVisibleWhenPanelsAreStacked(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.width = 100
+	model.height = 44
+	model.ready = true
+
+	view := model.View().Content
+	if strings.Count(view, "Flow") < 2 {
+		t.Fatal("expected Flow in both header and Browse navigation when panels are stacked")
+	}
+}
+
+func TestNarrowStatusBodyFitsItsAvailableWidth(t *testing.T) {
+	model := NewWithLoader(config.Default(), nil)
+	model.app.NowPlaying = &app.NowPlaying{
+		ID: "1", Title: "A long song title", Artist: "A long artist name",
+		CurrentMS: 30_000, TotalMS: 180_000,
+	}
+	body := model.renderStatusBody(36)
+	for _, line := range strings.Split(body, "\n") {
+		if got := textWidth(line); got > 34 {
+			t.Fatalf("status body line is wider than panel: got %d, want <= 34: %q", got, line)
+		}
+	}
+}
+
+func TestStatusProgressBarUsesAvailablePanelWidth(t *testing.T) {
+	if got := statusProgressBarWidth(100); got != 56 {
+		t.Fatalf("expected wider status progress bar, got %d", got)
+	}
+	if got := statusProgressBarWidth(50); got != 10 {
+		t.Fatalf("expected progress bar to shrink with panel, got %d", got)
+	}
+}
+
 func TestViewKeepsCollectionAndDisplayWhenCompactViewDisabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.CompactView = false

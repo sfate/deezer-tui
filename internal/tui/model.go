@@ -764,18 +764,38 @@ func (m Model) View() tea.View {
 	searchBar := m.renderSearchBar()
 	footer := m.renderPlaybar()
 	sidebarWidth := min(28, max(22, m.width/5))
-	middleAvailable := max(72, m.width-sidebarWidth-4)
+	// Reserve width for Library and Queue. At narrow sizes Flow and Display
+	// are expendable; at the smallest sizes Queue is too.
+	hideFlow := m.width < 108 && !(m.height >= 32 && m.height < 48)
+	hideDisplay := m.width < 108
+	hideQueue := m.height < 29 || (m.width < 82 && m.height < 30)
+	stackPanels := m.height >= 32 && m.height < 48
+	middleAvailable := max(1, m.width-sidebarWidth-4)
 	contentHeight := max(10, m.height-20)
-	if m.shouldUseCompactView(contentHeight) {
+	if m.shouldUseCompactView(contentHeight) || hideFlow || hideQueue || stackPanels {
 		contentHeight = max(1, m.height-lineCount(header)-lineCount(searchBar)-lineCount(footer)-3)
 		queueWidth := middleAvailable / 2
 		statusWidth := middleAvailable - queueWidth
 		renderBody := func(height int) string {
-			return joinColumns(
-				m.renderSidebar(sidebarWidth, height),
-				m.renderQueue(queueWidth, height),
-				m.renderCompactStatusColumn(statusWidth, height),
-			)
+			nav := m.renderSidebarWithFlow(sidebarWidth, height, !hideFlow)
+			status := m.renderCompactStatusColumn(statusWidth, height)
+			if hideDisplay {
+				status = m.renderStatusPanel(statusWidth, height)
+			}
+			if hideQueue {
+				return joinColumns(nav, m.renderStatusPanel(middleAvailable, height))
+			}
+			if stackPanels {
+				statusHeight := min(13, max(10, height/2))
+				queueHeight := max(3, height-statusHeight-1)
+				stacked := strings.Join([]string{
+					m.renderStatusPanel(middleAvailable, statusHeight),
+					m.renderQueue(middleAvailable, queueHeight),
+				}, "\n")
+				return joinColumns(nav, stacked)
+			}
+			queue := m.renderQueue(queueWidth, height)
+			return joinColumns(nav, queue, status)
 		}
 		body := renderBody(contentHeight)
 		content := strings.Join([]string{
@@ -2141,8 +2161,15 @@ func (m *Model) handlePlaybackFinished() tea.Cmd {
 }
 
 func (m Model) renderSidebar(width, height int) string {
+	return m.renderSidebarWithFlow(width, height, true)
+}
+
+func (m Model) renderSidebarWithFlow(width, height int, showFlow bool) string {
 	nav := []string{sectionHeading("Browse", activePalette.Blue)}
 	items := []string{"Home", "Flow", "Explore", "Favorites", "Settings"}
+	if !showFlow {
+		items = []string{"Home", "Explore", "Favorites", "Settings"}
+	}
 	selectedNav := derefOrZero(m.app.NavState.Selected())
 	for i, item := range items {
 		selected := i == selectedNav && m.app.ActivePanel == app.ActivePanelNavigation
@@ -2477,10 +2504,14 @@ func (m Model) renderStatusBody(width int) string {
 	if art == "" {
 		art = defaultArtworkANSI()
 	}
+	text := strings.Join(lines, "\n")
+	if width < 48 {
+		return m.renderTextSlot(text, max(1, width-4), 9, 1, 1)
+	}
 	body := joinColumns(
 		" ",
 		m.renderArtworkSlot(art, 16, 9),
-		m.renderTextSlot(strings.Join(lines, "\n"), max(24, width-24), 9, 1, 1),
+		m.renderTextSlot(text, max(24, width-24), 9, 1, 1),
 	)
 	return body
 }
@@ -3081,9 +3112,9 @@ func renderProgress(currentMS, totalMS uint64, width int) string {
 }
 
 func statusProgressBarWidth(panelWidth int) int {
-	textSlotWidth := max(24, panelWidth-24)
-	valueWidth := max(4, textSlotWidth-30)
-	return max(4, min(48, valueWidth))
+	// The bar sits beside a fixed-width label. Leave enough room for that
+	// label and the brackets, then use the remaining status-panel width.
+	return max(4, min(56, panelWidth-40))
 }
 
 func (m Model) renderDisplayBody(width, height int) string {
