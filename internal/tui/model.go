@@ -2644,22 +2644,6 @@ func (m Model) renderTextSlot(content string, width, height, padX, padY int) str
 	return strings.Join(out, "\n")
 }
 
-func defaultArtworkANSI() string {
-	lines := []string{
-		"  +--------+  ",
-		"  |  /\\    |  ",
-		"  | /  \\   |  ",
-		"  | \\__/ o |  ",
-		"  |        |  ",
-		"  +--------+  ",
-		"    NO ART    ",
-	}
-	for i, line := range lines {
-		lines[i] = paint(fitToWidth(line, 14), activePalette.TextMuted, "")
-	}
-	return strings.Join(lines, "\n")
-}
-
 func bootstrapCmd(loader Loader) tea.Cmd {
 	if loader == nil {
 		return nil

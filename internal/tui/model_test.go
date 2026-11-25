@@ -1705,8 +1705,11 @@ func TestStatusLineRendersDefaultArtworkWhenArtworkMissing(t *testing.T) {
 	model.artworkANSI = ""
 
 	view := model.renderStatusLine()
-	if !strings.Contains(view, "NO ART") || !strings.Contains(view, "+--------+") {
-		t.Fatal("expected default artwork placeholder")
+	if !strings.Contains(view, "▀") || !strings.Contains(view, "\x1b[38;2;") {
+		t.Fatal("expected image-filtered empty disc artwork")
+	}
+	if strings.Contains(view, "NO ART") || strings.Contains(view, "+--------+") {
+		t.Fatal("did not expect ASCII placeholder artwork")
 	}
 }
 
